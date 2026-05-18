@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="LiveText">
+  <meta name="theme-color" content="#0a0a0f">
+  <title>LiveText – Untertitel</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0f; --surface: #12121a; --border: #1e1e2e;
+      --accent: #00e5ff; --accent2: #ff3d71; --text: #f0f0f8;
+      --muted: #5a5a7a; --green: #00ff9d; --yellow: #ffd700;
+      --sat: env(safe-area-inset-top, 0px); --sab: env(safe-area-inset-bottom, 0px);
+      --sal: env(safe-area-inset-left, 0px); --sar: env(safe-area-inset-right, 0px);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; }
+    body {
+      background: var(--bg); color: var(--text); font-family: 'Syne', sans-serif;
+      height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+      -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent;
+      padding-top: var(--sat); padding-bottom: var(--sab);
+      padding-left: var(--sal); padding-right: var(--sar);
+    }
+    body::before {
+      content: ''; position: fixed; inset: 0;
+      background-image: linear-gradient(rgba(0,229,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,229,255,0.025) 1px, transparent 1px);
+      background-size: 40px 40px; pointer-events: none; z-index: 0;
+    }
+    .glow-orb {
+      position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
+      width: 120vw; height: 50vh;
+      background: radial-gradient(ellipse at center bottom, rgba(0,229,255,0.04) 0%, transparent 70%);
+      pointer-events: none; z-index: 0; transition: opacity 0.5s; opacity: 0;
+    }
+    .glow-orb.active { opacity: 1; }
+
+    /* ── Header ── */
+    header {
+      position: relative; z-index: 10; padding: 10px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border); flex-shrink: 0; gap: 8px;
+    }
+    .logo { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .logo-icon { width: 30px; height: 30px; background: var(--accent); border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+    .logo-text { font-size: 1.1rem; font-weight: 800; letter-spacing: -0.03em; }
+    .logo-text span { color: var(--accent); }
+    .status-pill {
+      display: flex; align-items: center; gap: 6px; padding: 4px 10px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+      font-size: 0.65rem; font-family: 'DM Mono', monospace; color: var(--muted);
+      letter-spacing: 0.05em; text-transform: uppercase; transition: all 0.3s; min-height: 32px; flex-shrink: 0;
+    }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); transition: all 0.3s; flex-shrink: 0; }
+    .status-pill.listening .status-dot { background: var(--green); box-shadow: 0 0 8px var(--green); animation: blink 1.2s ease-in-out infinite; }
+    .status-pill.listening { border-color: rgba(0,255,157,0.3); color: var(--green); }
+    .status-pill.translating .status-dot { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); animation: blink 0.6s ease-in-out infinite; }
+    .status-pill.translating { border-color: rgba(255,215,0,0.3); color: var(--yellow); }
+    .status-pill.error .status-dot { background: var(--accent2); }
+    .status-pill.error { border-color: rgba(255,61,113,0.4); color: var(--accent2); }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    /* ── Sprach-Auswahl-Leiste ── */
+    .lang-bar {
+      position: relative; z-index: 10; flex-shrink: 0;
+      padding: 8px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(18,18,26,0.8);
+    }
+    .lang-bar-label {
+      font-size: 0.58rem; font-family: 'DM Mono', monospace;
+      color: var(--muted); letter-spacing: 0.12em; text-transform: uppercase;
+      flex-shrink: 0;
+    }
+    .lang-btns { display: flex; gap: 6px; flex: 1; }
+    .lang-btn {
+      flex: 1; padding: 6px 4px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--muted); font-family: 'DM Mono', monospace;
+      font-size: 0.68rem; letter-spacing: 0.04em; cursor: pointer;
+      touch-action: manipulation; transition: all 0.2s; text-align: center;
+      -webkit-user-select: none; user-select: none;
+    }
+    .lang-btn.active {
+      border-color: var(--accent); color: var(--accent);
+      background: rgba(0,229,255,0.08);
+    }
+    .lang-btn:active { transform: scale(0.96); }
+
+    /* Übersetzungspfeil */
+    .translate-row {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+    }
+    .arrow-label {
+      font-size: 0.6rem; font-family: 'DM Mono', monospace;
+      color: var(--muted); white-space: nowrap;
+    }
+    .translate-toggle {
+      display: flex; align-items: center; gap: 5px;
+      padding: 5px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--surface);
+      color: var(--muted); font-family: 'DM Mono', monospace;
+      font-size: 0.62rem; cursor: pointer; touch-action: manipulation;
+      transition: all 0.2s; -webkit-user-select: none; user-select: none;
+      white-space: nowrap;
+    }
+    .translate-toggle.active {
+      border-color: var(--yellow); color: var(--yellow);
+      background: rgba(255,215,0,0.07);
+    }
+    .translate-toggle:active { transform: scale(0.96); }
+
+    /* ── Main subtitle area ── */
+    main {
+      position: relative; z-index: 10; flex: 1; min-height: 0;
+      display: flex; flex-direction: column; padding: 0 20px 16px;
+    }
+    .subtitle-wrapper { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; }
+    .subtitle-history { overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; min-height: 0; padding-right: 4px; scrollbar-width: none; }
+    .subtitle-history::-webkit-scrollbar { display: none; }
+
+    .history-line {
+      font-size: clamp(0.9rem, 3.5vw, 1.05rem); color: var(--muted);
+      line-height: 1.55; padding: 3px 0; font-family: 'DM Mono', monospace;
+      animation: fadeUp 0.35s ease;
+    }
+    .history-line .orig { color: #3a3a5a; font-size: 0.82em; display: block; }
+    .history-line .transl { color: var(--muted); }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+    .divider { border: none; border-top: 1px solid var(--border); margin: 12px 0 10px; flex-shrink: 0; }
+    .current-label { font-size: 0.6rem; font-family: 'DM Mono', monospace; color: var(--muted); letter-spacing: 0.15em; text-transform: uppercase; margin-bottom: 6px; flex-shrink: 0; }
+    .current-text {
+      font-size: clamp(1.6rem, 6.5vw, 2.6rem); font-weight: 700; line-height: 1.15;
+      letter-spacing: -0.02em; color: var(--text); word-break: break-word;
+      flex-shrink: 0; min-height: 2.4em;
+    }
+    .placeholder { color: var(--border); }
+    .interim-text { color: var(--accent); }
+    .translating-text { color: var(--yellow); font-size: 0.5em; font-family: 'DM Mono', monospace; letter-spacing: 0.1em; text-transform: uppercase; display: block; margin-top: 4px; }
+    .cursor { display: inline-block; width: 3px; height: 0.82em; background: var(--accent); margin-left: 3px; vertical-align: middle; animation: blink-cur 0.8s step-end infinite; }
+    @keyframes blink-cur { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    /* ── Controls ── */
+    .controls {
+      position: relative; z-index: 10; padding: 12px 16px 14px;
+      border-top: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-around; flex-shrink: 0;
+    }
+    .mic-btn {
+      width: 76px; height: 76px; border-radius: 50%;
+      border: 2px solid var(--border); background: var(--surface); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      touch-action: manipulation;
+      transition: transform 0.2s cubic-bezier(0.34,1.56,0.64,1), background 0.2s, border-color 0.2s;
+      outline: none; -webkit-user-select: none; user-select: none;
+    }
+    .mic-btn:active { transform: scale(0.93); }
+    .mic-btn.on { background: var(--accent); border-color: var(--accent); animation: pulse 2s ease-out infinite; }
+    .mic-btn:disabled { opacity: 0.35; }
+    @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(0,229,255,0.45)} 70%{box-shadow:0 0 0 22px rgba(0,229,255,0)} 100%{box-shadow:0 0 0 0 rgba(0,229,255,0)} }
+    .mic-btn svg { width: 28px; height: 28px; }
+    .mic-btn.on svg { color: #0a0a0f; }
+    .mic-btn:not(.on) svg { color: var(--muted); }
+    .btn-col { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+    .btn-label { font-size: 0.62rem; font-family: 'DM Mono', monospace; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); transition: color 0.3s; }
+    .btn-col.on .btn-label { color: var(--accent); }
+    .clear-btn {
+      width: 52px; height: 52px; border-radius: 50%;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      touch-action: manipulation; transition: all 0.2s; -webkit-user-select: none; user-select: none;
+    }
+    .clear-btn:active { background: rgba(255,61,113,0.1); border-color: var(--accent2); color: var(--accent2); }
+    .clear-btn svg { width: 20px; height: 20px; }
+    .volume-bars { display: flex; align-items: center; gap: 3px; height: 40px; width: 40px; justify-content: center; }
+    .bar { width: 4px; border-radius: 2px; background: var(--border); transition: background 0.3s; }
+    .volume-bars.active .bar { background: var(--accent); }
+
+    /* ── Toast ── */
+    #toast {
+      display: none; position: fixed;
+      top: calc(var(--sat) + 65px); left: 16px; right: 16px;
+      background: rgba(255,61,113,0.13); border: 1px solid rgba(255,61,113,0.45);
+      color: var(--accent2); padding: 12px 16px; border-radius: 12px;
+      font-size: 0.82rem; font-family: 'DM Mono', monospace;
+      z-index: 200; text-align: center; line-height: 1.6; white-space: pre-line;
+    }
+    #toast.show { display: block; }
+    #iosBanner {
+      display: none; background: rgba(0,229,255,0.07); border-bottom: 1px solid rgba(0,229,255,0.15);
+      padding: 8px 20px; font-size: 0.7rem; font-family: 'DM Mono', monospace;
+      color: var(--muted); text-align: center; line-height: 1.5; z-index: 10; position: relative; flex-shrink: 0;
+    }
+    #iosBanner.show { display: block; }
+    #iosBanner strong { color: var(--accent); }
+  </style>
+</head>
+<body>
+<div class="glow-orb" id="glowOrb"></div>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🎙</div>
+    <div class="logo-text">Live<span>Text</span></div>
+  </div>
+  <div class="status-pill" id="statusPill">
+    <div class="status-dot"></div>
+    <span id="statusLabel">Bereit</span>
+  </div>
+</header>
+
+<div id="iosBanner">iPhone erkannt · Mikrofon-Popup einmalig mit <strong>Erlauben</strong> bestätigen</div>
+<div id="toast"></div>
+
+<!-- SPRACH-AUSWAHL LEISTE -->
+<div class="lang-bar">
+  <span class="lang-bar-label">Sprache:</span>
+  <div class="lang-btns">
+    <button class="lang-btn active" id="btn-de" onclick="setLang('de')">🇩🇪 DE</button>
+    <button class="lang-btn" id="btn-en" onclick="setLang('en')">🇺🇸 EN</button>
+    <button class="lang-btn" id="btn-es" onclick="setLang('es')">🇪🇸 ES</button>
+  </div>
+  <div class="translate-row">
+    <span class="arrow-label">→ 🇩🇪</span>
+    <button class="translate-toggle" id="translateToggle" onclick="toggleTranslate()">
+      ✦ Übersetzen
+    </button>
+  </div>
+</div>
+
+<main>
+  <div class="subtitle-wrapper">
+    <div class="subtitle-history" id="subtitleHistory"></div>
+    <hr class="divider">
+    <div class="current-label">↓ Aktuell</div>
+    <div class="current-text" id="currentText">
+      <span class="placeholder">EIN tippen → Erlauben → sprechen</span>
+    </div>
+  </div>
+</main>
+
+<div class="controls">
+  <div class="btn-col">
+    <button class="clear-btn" onclick="doClear()" aria-label="Verlauf löschen">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+        <path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+      </svg>
+    </button>
+    <span class="btn-label">Löschen</span>
+  </div>
+  <div class="btn-col" id="micWrapper">
+    <button class="mic-btn" id="micBtn" onclick="toggleMic()" aria-label="Mikrofon ein/aus">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>
+    </button>
+    <span class="btn-label" id="micLabel">EIN</span>
+  </div>
+  <div class="btn-col">
+    <div class="volume-bars" id="volumeBars">
+      <div class="bar" id="b1" style="height:8px"></div>
+      <div class="bar" id="b2" style="height:14px"></div>
+      <div class="bar" id="b3" style="height:22px"></div>
+      <div class="bar" id="b4" style="height:14px"></div>
+      <div class="bar" id="b5" style="height:8px"></div>
+    </div>
+    <span class="btn-label">Pegel</span>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  LiveText – Spracherkennung + Übersetzung via Claude
+// ═══════════════════════════════════════════════════════
+
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+if (isIOS) document.getElementById('iosBanner').classList.add('show');
+
+// Sprach-Konfiguration
+const LANGS = {
+  de: { code: 'de-DE', label: 'Deutsch',  flag: '🇩🇪' },
+  en: { code: 'en-US', label: 'English',  flag: '🇺🇸' },
+  es: { code: 'es-ES', label: 'Español',  flag: '🇪🇸' },
+};
+let currentLang    = 'de';  // Erkennungssprache
+let translateOn    = false; // Übersetzung aktiv?
+
+const dom = {
+  micBtn:      document.getElementById('micBtn'),
+  micWrapper:  document.getElementById('micWrapper'),
+  micLabel:    document.getElementById('micLabel'),
+  statusPill:  document.getElementById('statusPill'),
+  statusLabel: document.getElementById('statusLabel'),
+  currentText: document.getElementById('currentText'),
+  history:     document.getElementById('subtitleHistory'),
+  glow:        document.getElementById('glowOrb'),
+  volumeBars:  document.getElementById('volumeBars'),
+  toast:       document.getElementById('toast'),
+  bars:        ['b1','b2','b3','b4','b5'].map(id => document.getElementById(id)),
+  transToggle: document.getElementById('translateToggle'),
+};
+
+const BAR_H = [8, 14, 22, 14, 8];
+let isListening = false, recognition = null, accText = '', barAnimId = null, toastTimer = null;
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SpeechRecognition) {
+  showToast('Spracherkennung nicht verfügbar.\n' + (isIOS ? 'Bitte Edge oder Safari nutzen.' : 'Bitte Chrome oder Edge verwenden.'));
+  dom.micBtn.disabled = true;
+}
+
+// ── Sprachauswahl ──────────────────────────────────────
+function setLang(lang) {
+  currentLang = lang;
+  ['de','en','es'].forEach(l => document.getElementById('btn-'+l).classList.toggle('active', l === lang));
+  // Wenn läuft: Erkennung neu starten mit neuer Sprache
+  if (isListening) { stopListening(); startListening(); }
+}
+
+// ── Übersetzung ein/aus ────────────────────────────────
+function toggleTranslate() {
+  translateOn = !translateOn;
+  dom.transToggle.classList.toggle('active', translateOn);
+  dom.transToggle.textContent = translateOn ? '✦ Übersetzen AN' : '✦ Übersetzen';
+}
+
+// ── Übersetzung via Google Translate (inoffiziell, funktioniert von file://) ──
+async function translateToDe(text, sourceLang) {
+  if (!translateOn || sourceLang === 'de') return null;
+  if (!text || text.trim().length < 2) return null;
+
+  const from = LANGS[sourceLang]?.code?.split('-')[0] || sourceLang;
+
+  dom.statusPill.className = 'status-pill translating';
+  dom.statusLabel.textContent = 'Übersetze …';
+
+  let result = null;
+
+  // Google Translate inoffizielle API – funktioniert ohne Key von überall
+  try {
+    const url = 'https://translate.googleapis.com/translate_a/single'
+      + '?client=gtx&sl=' + from + '&tl=de&dt=t&q=' + encodeURIComponent(text);
+    const res  = await fetch(url);
+    const data = await res.json();
+    // Antwortformat: [[[übersetzter_text, original, ...], ...], ...]
+    if (Array.isArray(data) && data[0]) {
+      const parts = data[0].map(chunk => (chunk[0] || '')).join('');
+      if (parts.trim()) result = parts.trim();
+    }
+  } catch(e) {
+    // Fallback: MyMemory
+    try {
+      const url = 'https://api.mymemory.translated.net/get?q='
+        + encodeURIComponent(text) + '&langpair=' + from + '|de';
+      const res  = await fetch(url);
+      const data = await res.json();
+      const t = (data.responseData?.translatedText || '').trim();
+      if (t && !t.startsWith('QUERY') && t !== text) result = t;
+    } catch(e2) {}
+  }
+
+  if (isListening) {
+    dom.statusPill.className = 'status-pill listening';
+    dom.statusLabel.textContent = 'Hört zu …';
+  }
+  return result;
+}
+
+// ── Toggle Mikrofon ────────────────────────────────────
+function toggleMic() {
+  if (!SpeechRecognition) return;
+  if (isListening) stopListening(); else startListening();
+}
+
+function startListening() {
+  hideToast();
+  recognition = new SpeechRecognition();
+  recognition.lang            = LANGS[currentLang].code;
+  recognition.continuous      = true;
+  recognition.interimResults  = true;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => { isListening = true; accText = ''; setUI(true); startBars(); };
+
+  recognition.onresult = async (e) => {
+    let interim = '', newFinal = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) newFinal += t;
+      else interim += t;
+    }
+
+    // Interim immer sofort anzeigen (Originalsprache, damit man sieht dass es läuft)
+    if (interim) renderCurrent(accText, interim);
+
+    if (newFinal) {
+      accText += (accText ? ' ' : '') + newFinal.trim();
+
+      if (translateOn && currentLang !== 'de') {
+        // Ganzen akkumulierten Text übersetzen
+        const original = accText.trim();
+        accText = '';
+
+        // Sofort visuelles Feedback: Original klein + Spinner
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        dom.currentText.innerHTML =
+          `<span style="color:var(--muted);font-size:0.6em;display:block;margin-bottom:4px">`
+          + esc(original) + `</span>`
+          + `<span style="color:var(--yellow);font-size:0.55em;font-family:'DM Mono',monospace;letter-spacing:0.1em">⟳ ÜBERSETZE …</span>`;
+
+        const translated = await translateToDe(original, currentLang);
+
+        if (translated) {
+          // Erfolg: deutsche Übersetzung groß anzeigen
+          dom.currentText.innerHTML = esc(translated) + '<span class="cursor"></span>';
+          pushHistory(original, translated);
+        } else {
+          // API nicht erreichbar: Original anzeigen + Hinweis
+          dom.currentText.innerHTML = esc(original)
+            + `<span style="color:var(--accent2);font-size:0.45em;font-family:'DM Mono',monospace;display:block;margin-top:6px">⚠ Übersetzung fehlgeschlagen – Internetverbindung prüfen</span>`;
+          pushHistory(original, null);
+        }
+      } else {
+        // Kein Übersetzungsmodus
+        const shouldFlush = /[.!?]$/.test(newFinal.trim()) || accText.length > 120;
+        if (shouldFlush) {
+          pushHistory(accText.trim(), null);
+          accText = '';
+          renderCurrent('', '');
+        } else {
+          renderCurrent(accText, '');
+        }
+      }
+    }
+  };
+
+  recognition.onerror = (e) => {
+    switch(e.error) {
+      case 'not-allowed': case 'permission-denied':
+        showToast('Mikrofon-Zugriff verweigert.\n' + (isIOS ? 'Einstellungen → Safari/Edge → Mikrofon → Erlauben' : 'Browser → Mikrofon → Erlauben'));
+        forceStop(); break;
+      case 'audio-capture':
+        showToast('Kein Mikrofon gefunden.'); forceStop(); break;
+    }
+  };
+
+  recognition.onend = () => {
+    if (isListening) { try { recognition.start(); } catch(e) {} }
+  };
+
+  try { recognition.start(); } catch(e) { showToast('Start fehlgeschlagen: ' + e.message); }
+}
+
+function stopListening() {
+  isListening = false;
+  if (recognition) { recognition.onend = null; try { recognition.stop(); } catch(e){} recognition = null; }
+  stopBars(); setUI(false);
+  if (accText.trim()) { pushHistory(accText.trim(), null); accText = ''; }
+  renderCurrent('', '');
+}
+
+function forceStop() {
+  isListening = false;
+  if (recognition) { recognition.onend = null; try { recognition.abort(); } catch(e){} recognition = null; }
+  stopBars(); setUI(false); accText = '';
+}
+
+function doClear() { dom.history.innerHTML = ''; accText = ''; renderCurrent('', ''); }
+
+// ── Render ─────────────────────────────────────────────
+function renderCurrent(final, interim) {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (!final && !interim) {
+    dom.currentText.innerHTML = isListening ? '<span class="cursor"></span>' : '<span class="placeholder">EIN tippen → Erlauben → sprechen</span>';
+    return;
+  }
+  dom.currentText.innerHTML =
+    (final  ? esc(final) + ' ' : '') +
+    (interim ? `<span class="interim-text">${esc(interim)}</span>` : '') +
+    (isListening ? '<span class="cursor"></span>' : '');
+}
+
+function renderTranslating(original) {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  dom.currentText.innerHTML =
+    `<span style="color:var(--muted);font-size:0.7em">${esc(original)}</span>` +
+    `<span class="translating-text">⟳ Übersetze …</span>`;
+}
+
+function pushHistory(original, translated) {
+  const esc = s => (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const line = document.createElement('div');
+  line.className = 'history-line';
+
+  if (translated) {
+    // Verlauf: deutsche Übersetzung + Original klein darunter
+    line.innerHTML =
+      `<span class="transl">${esc(translated)}</span>` +
+      `<span class="orig">${LANGS[currentLang]?.flag || ''} ${esc(original)}</span>`;
+    // Hauptanzeige: NUR die deutsche Übersetzung – groß und deutlich
+    dom.currentText.innerHTML = esc(translated) + '<span class="cursor"></span>';
+  } else {
+    // Kein Übersetzungsmodus: Original anzeigen
+    line.textContent = original;
+    dom.currentText.innerHTML = esc(original) + (isListening ? '<span class="cursor"></span>' : '');
+  }
+
+  dom.history.appendChild(line);
+  dom.history.scrollTo({ top: dom.history.scrollHeight, behavior: 'smooth' });
+}
+
+// ── UI ─────────────────────────────────────────────────
+function setUI(on) {
+  dom.micBtn.classList.toggle('on', on);
+  dom.micWrapper.classList.toggle('on', on);
+  dom.micLabel.textContent = on ? 'AUS' : 'EIN';
+  dom.statusPill.className = 'status-pill' + (on ? ' listening' : '');
+  dom.statusLabel.textContent = on ? 'Hört zu …' : 'Bereit';
+  dom.glow.classList.toggle('active', on);
+  dom.volumeBars.classList.toggle('active', on);
+  if (!on) renderCurrent('', '');
+}
+
+// ── Pegelbalken ────────────────────────────────────────
+function startBars() {
+  let t = 0;
+  (function frame() {
+    t += 0.09;
+    dom.bars.forEach((b, i) => {
+      const h = BAR_H[i] + (Math.sin(t + i * 0.7) * 0.5 + 0.5) * (28 - BAR_H[i]);
+      b.style.height = h.toFixed(1) + 'px';
+    });
+    barAnimId = requestAnimationFrame(frame);
+  })();
+}
+function stopBars() { cancelAnimationFrame(barAnimId); dom.bars.forEach((b,i) => b.style.height = BAR_H[i]+'px'); }
+
+// ── Toast ──────────────────────────────────────────────
+function showToast(msg) { clearTimeout(toastTimer); dom.toast.textContent = msg; dom.toast.classList.add('show'); toastTimer = setTimeout(hideToast, 9000); }
+function hideToast() { dom.toast.classList.remove('show'); }
+
+// ── Wake Lock ──────────────────────────────────────────
+let wakeLock = null;
+async function requestWakeLock() { try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch(e){} }
+requestWakeLock();
+document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible') await requestWakeLock(); });
+</script>
+</body>
+</html>
