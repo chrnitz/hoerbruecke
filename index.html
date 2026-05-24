@@ -4,29 +4,30 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="transparent">
+<meta name="theme-color" content="#000000">
 <title>HörBrücke</title>
 <style>
 :root {
-  --bg:transparent; --card:transparent; --border:rgba(0,255,80,.25);
+  --bg:#000000; --card:#000000; --border:rgba(0,255,80,.2);
   --green:#00ff50; --yellow:#ffe000;
   --red:#ff4444; --text:#00ff50; --dim:#00cc40;
 }
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{height:100%;background:transparent;color:var(--text);font-family:system-ui,sans-serif}
+html,body{height:100%;background:#000000;color:var(--text);font-family:system-ui,sans-serif}
 body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
-  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background:#000000}
 
 /* ── HEADER ── */
 .hdr{display:flex;align-items:center;justify-content:space-between;
   padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
-  background:transparent}
+  background:#000000}
 .logo{font-size:1.15rem;font-weight:800;letter-spacing:-.03em;color:var(--green)}
 .logo b{color:var(--green)}
 .pill{display:flex;align-items:center;gap:6px;padding:4px 10px;
   border-radius:99px;border:1px solid var(--border);
   font-size:.62rem;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
-  background:transparent}
+  background:#000000}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex-shrink:0}
 .pill.on .dot{background:var(--green);box-shadow:0 0 7px var(--green);animation:bl 1.2s infinite}
 .pill.on{border-color:rgba(0,255,80,.4);color:var(--green)}
@@ -38,48 +39,48 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 
 /* ── INTERNET WARNUNG ── */
 #net-warn{display:none;flex-shrink:0;padding:8px 14px;
-  background:rgba(255,68,68,.15);border-bottom:1px solid rgba(255,68,68,.4);
+  background:#000000;border-bottom:1px solid rgba(255,68,68,.4);
   font-size:.72rem;color:#ff8080;text-align:center;line-height:1.5}
 #net-warn.show{display:block}
 
 /* ── SPRACHE + ÜBERSETZEN ── */
 .langbar{display:flex;align-items:center;gap:6px;padding:8px 14px;
   border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap;
-  background:transparent}
+  background:#000000}
 .lbtn{flex:1;min-width:52px;padding:7px 4px;border-radius:8px;
-  border:1px solid var(--border);background:rgba(0,255,80,.05);
+  border:1px solid var(--border);background:#000000;
   color:var(--dim);font-size:.7rem;cursor:pointer;text-align:center;
   touch-action:manipulation;transition:all .2s}
-.lbtn.on{border-color:var(--green);color:var(--green);background:rgba(0,255,80,.12);
+.lbtn.on{border-color:var(--green);color:var(--green);background:#000000;
   text-shadow:0 0 8px rgba(0,255,80,.6)}
 .lbtn:active{transform:scale(.94)}
 .tbtn{padding:7px 11px;border-radius:8px;
-  border:1px solid var(--border);background:rgba(0,255,80,.05);
+  border:1px solid var(--border);background:#000000;
   color:var(--dim);font-size:.7rem;cursor:pointer;white-space:nowrap;
   touch-action:manipulation;transition:all .2s}
-.tbtn.on{border-color:var(--yellow);color:var(--yellow);background:rgba(255,224,0,.08)}
+.tbtn.on{border-color:var(--yellow);color:var(--yellow);background:#000000}
 .tbtn:active{transform:scale(.94)}
 
 /* ── VERLAUF ── */
 .hist{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
   padding:10px 14px;display:flex;flex-direction:column;gap:6px;min-height:0;
-  background:transparent}
+  background:#000000}
 .hist::-webkit-scrollbar{display:none}
-.hline{font-size:clamp(.85rem,3.2vw,1rem);color:rgba(0,255,80,.6);
+.hline{font-size:clamp(.85rem,3.2vw,1rem);color:rgba(0,255,80,.55);
   line-height:1.55;animation:fu .3s ease}
-.hline .orig{display:block;font-size:.78em;color:rgba(0,255,80,.35);margin-top:2px}
+.hline .orig{display:block;font-size:.78em;color:rgba(0,255,80,.3);margin-top:2px}
 @keyframes fu{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
 .sep{border:none;border-top:1px solid var(--border);flex-shrink:0}
 
 /* ── AKTUELL ── */
-.cur-wrap{flex-shrink:0;padding:10px 14px 6px;background:transparent}
+.cur-wrap{flex-shrink:0;padding:10px 14px 6px;background:#000000}
 .cur-lbl{font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
-  color:rgba(0,255,80,.5);margin-bottom:5px}
+  color:rgba(0,255,80,.45);margin-bottom:5px}
 #cur{font-size:clamp(1.5rem,6vw,2.4rem);font-weight:700;line-height:1.2;
   letter-spacing:-.02em;word-break:break-word;min-height:2.5rem;
-  color:var(--green);text-shadow:0 0 20px rgba(0,255,80,.4)}
-#cur .interim{color:rgba(0,255,80,.7)}
-#cur .hint{color:rgba(0,255,80,.3)}
+  color:var(--green);text-shadow:0 0 20px rgba(0,255,80,.5)}
+#cur .interim{color:rgba(0,255,80,.65)}
+#cur .hint{color:rgba(0,255,80,.25)}
 .blink{display:inline-block;width:3px;height:.8em;
   background:var(--green);margin-left:3px;vertical-align:middle;
   animation:bc .8s step-end infinite;box-shadow:0 0 6px var(--green)}
@@ -88,25 +89,25 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 /* ── CONTROLS ── */
 .ctrl{display:flex;align-items:center;justify-content:space-around;
   padding:12px 14px 14px;border-top:1px solid var(--border);flex-shrink:0;
-  background:transparent}
+  background:#000000}
 .micbtn{width:74px;height:74px;border-radius:50%;
-  border:2px solid var(--border);background:rgba(0,255,80,.05);
+  border:2px solid var(--border);background:#000000;
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
   cursor:pointer;touch-action:manipulation;transition:all .25s;
   color:var(--green);font-size:.58rem;letter-spacing:.08em;text-transform:uppercase}
 .micbtn svg{width:26px;height:26px}
-.micbtn.on{background:rgba(0,255,80,.15);border-color:var(--green);color:var(--green);
-  box-shadow:0 0 20px rgba(0,255,80,.3);
+.micbtn.on{background:#000000;border-color:var(--green);color:var(--green);
+  box-shadow:0 0 20px rgba(0,255,80,.4);
   animation:pu 2s ease-out infinite}
-@keyframes pu{0%{box-shadow:0 0 0 0 rgba(0,255,80,.4)}70%{box-shadow:0 0 0 20px rgba(0,255,80,0)}100%{box-shadow:0 0 0 0 rgba(0,255,80,0)}}
+@keyframes pu{0%{box-shadow:0 0 0 0 rgba(0,255,80,.5)}70%{box-shadow:0 0 0 20px rgba(0,255,80,0)}100%{box-shadow:0 0 0 0 rgba(0,255,80,0)}}
 .clrbtn{width:50px;height:50px;border-radius:50%;
-  border:1px solid var(--border);background:transparent;
+  border:1px solid var(--border);background:#000000;
   display:flex;align-items:center;justify-content:center;
   cursor:pointer;touch-action:manipulation;color:var(--dim)}
 .clrbtn svg{width:20px;height:20px}
 .clrbtn:active{border-color:var(--red);color:var(--red)}
 .bars{display:flex;align-items:center;gap:3px;height:36px;width:36px;justify-content:center}
-.bar{width:4px;border-radius:2px;background:rgba(0,255,80,.2);transition:background .3s}
+.bar{width:4px;border-radius:2px;background:rgba(0,255,80,.15);transition:background .3s}
 .bars.on .bar{background:var(--green);box-shadow:0 0 4px var(--green)}
 </style>
 </head>
