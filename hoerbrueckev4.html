@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="transparent">
+<title>HörBrücke</title>
+<style>
+:root {
+  --bg:transparent; --card:transparent; --border:rgba(0,255,80,.25);
+  --green:#00ff50; --yellow:#ffe000;
+  --red:#ff4444; --text:#00ff50; --dim:#00cc40;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:transparent;color:var(--text);font-family:system-ui,sans-serif}
+body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+
+/* ── HEADER ── */
+.hdr{display:flex;align-items:center;justify-content:space-between;
+  padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
+  background:transparent}
+.logo{font-size:1.15rem;font-weight:800;letter-spacing:-.03em;color:var(--green)}
+.logo b{color:var(--green)}
+.pill{display:flex;align-items:center;gap:6px;padding:4px 10px;
+  border-radius:99px;border:1px solid var(--border);
+  font-size:.62rem;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  background:transparent}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex-shrink:0}
+.pill.on .dot{background:var(--green);box-shadow:0 0 7px var(--green);animation:bl 1.2s infinite}
+.pill.on{border-color:rgba(0,255,80,.4);color:var(--green)}
+.pill.tr .dot{background:var(--yellow);animation:bl .5s infinite}
+.pill.tr{border-color:rgba(255,224,0,.3);color:var(--yellow)}
+.pill.er .dot{background:var(--red)}
+.pill.er{border-color:rgba(255,68,68,.4);color:var(--red)}
+@keyframes bl{0%,100%{opacity:1}50%{opacity:.2}}
+
+/* ── INTERNET WARNUNG ── */
+#net-warn{display:none;flex-shrink:0;padding:8px 14px;
+  background:rgba(255,68,68,.15);border-bottom:1px solid rgba(255,68,68,.4);
+  font-size:.72rem;color:#ff8080;text-align:center;line-height:1.5}
+#net-warn.show{display:block}
+
+/* ── SPRACHE + ÜBERSETZEN ── */
+.langbar{display:flex;align-items:center;gap:6px;padding:8px 14px;
+  border-bottom:1px solid var(--border);flex-shrink:0;flex-wrap:wrap;
+  background:transparent}
+.lbtn{flex:1;min-width:52px;padding:7px 4px;border-radius:8px;
+  border:1px solid var(--border);background:rgba(0,255,80,.05);
+  color:var(--dim);font-size:.7rem;cursor:pointer;text-align:center;
+  touch-action:manipulation;transition:all .2s}
+.lbtn.on{border-color:var(--green);color:var(--green);background:rgba(0,255,80,.12);
+  text-shadow:0 0 8px rgba(0,255,80,.6)}
+.lbtn:active{transform:scale(.94)}
+.tbtn{padding:7px 11px;border-radius:8px;
+  border:1px solid var(--border);background:rgba(0,255,80,.05);
+  color:var(--dim);font-size:.7rem;cursor:pointer;white-space:nowrap;
+  touch-action:manipulation;transition:all .2s}
+.tbtn.on{border-color:var(--yellow);color:var(--yellow);background:rgba(255,224,0,.08)}
+.tbtn:active{transform:scale(.94)}
+
+/* ── VERLAUF ── */
+.hist{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:10px 14px;display:flex;flex-direction:column;gap:6px;min-height:0;
+  background:transparent}
+.hist::-webkit-scrollbar{display:none}
+.hline{font-size:clamp(.85rem,3.2vw,1rem);color:rgba(0,255,80,.6);
+  line-height:1.55;animation:fu .3s ease}
+.hline .orig{display:block;font-size:.78em;color:rgba(0,255,80,.35);margin-top:2px}
+@keyframes fu{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.sep{border:none;border-top:1px solid var(--border);flex-shrink:0}
+
+/* ── AKTUELL ── */
+.cur-wrap{flex-shrink:0;padding:10px 14px 6px;background:transparent}
+.cur-lbl{font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
+  color:rgba(0,255,80,.5);margin-bottom:5px}
+#cur{font-size:clamp(1.5rem,6vw,2.4rem);font-weight:700;line-height:1.2;
+  letter-spacing:-.02em;word-break:break-word;min-height:2.5rem;
+  color:var(--green);text-shadow:0 0 20px rgba(0,255,80,.4)}
+#cur .interim{color:rgba(0,255,80,.7)}
+#cur .hint{color:rgba(0,255,80,.3)}
+.blink{display:inline-block;width:3px;height:.8em;
+  background:var(--green);margin-left:3px;vertical-align:middle;
+  animation:bc .8s step-end infinite;box-shadow:0 0 6px var(--green)}
+@keyframes bc{0%,100%{opacity:1}50%{opacity:0}}
+
+/* ── CONTROLS ── */
+.ctrl{display:flex;align-items:center;justify-content:space-around;
+  padding:12px 14px 14px;border-top:1px solid var(--border);flex-shrink:0;
+  background:transparent}
+.micbtn{width:74px;height:74px;border-radius:50%;
+  border:2px solid var(--border);background:rgba(0,255,80,.05);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  cursor:pointer;touch-action:manipulation;transition:all .25s;
+  color:var(--green);font-size:.58rem;letter-spacing:.08em;text-transform:uppercase}
+.micbtn svg{width:26px;height:26px}
+.micbtn.on{background:rgba(0,255,80,.15);border-color:var(--green);color:var(--green);
+  box-shadow:0 0 20px rgba(0,255,80,.3);
+  animation:pu 2s ease-out infinite}
+@keyframes pu{0%{box-shadow:0 0 0 0 rgba(0,255,80,.4)}70%{box-shadow:0 0 0 20px rgba(0,255,80,0)}100%{box-shadow:0 0 0 0 rgba(0,255,80,0)}}
+.clrbtn{width:50px;height:50px;border-radius:50%;
+  border:1px solid var(--border);background:transparent;
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;touch-action:manipulation;color:var(--dim)}
+.clrbtn svg{width:20px;height:20px}
+.clrbtn:active{border-color:var(--red);color:var(--red)}
+.bars{display:flex;align-items:center;gap:3px;height:36px;width:36px;justify-content:center}
+.bar{width:4px;border-radius:2px;background:rgba(0,255,80,.2);transition:background .3s}
+.bars.on .bar{background:var(--green);box-shadow:0 0 4px var(--green)}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="logo">Hör<b>Brücke</b></div>
+  <div class="pill" id="pill"><div class="dot"></div><span id="pill-txt">Bereit</span></div>
+</div>
+
+<!-- INTERNET WARNUNG -->
+<div id="net-warn">
+  ⚠ Keine Internetverbindung – Übersetzung nicht verfügbar.<br>
+  Bitte WLAN oder Mobilnetz einschalten.
+</div>
+
+<!-- SPRACHE + ÜBERSETZEN -->
+<div class="langbar">
+  <button class="lbtn on" id="lb-de" onclick="setLang('de')">🇩🇪 DE</button>
+  <button class="lbtn"    id="lb-en" onclick="setLang('en')">🇺🇸 EN</button>
+  <button class="lbtn"    id="lb-es" onclick="setLang('es')">🇪🇸 ES</button>
+  <button class="tbtn" id="tbtn" onclick="toggleTranslate()">→🇩🇪 Übersetzen</button>
+</div>
+
+<!-- VERLAUF -->
+<div class="hist" id="hist"></div>
+<hr class="sep">
+
+<!-- AKTUELL -->
+<div class="cur-wrap">
+  <div class="cur-lbl">↓ Aktuell</div>
+  <div id="cur"><span class="hint">EIN drücken → sprechen</span></div>
+</div>
+
+<!-- CONTROLS -->
+<div class="ctrl">
+  <button class="clrbtn" onclick="clearAll()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+      <path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
+    </svg>
+  </button>
+
+  <button class="micbtn" id="micbtn" onclick="toggleMic()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+      <line x1="12" y1="19" x2="12" y2="23"/>
+      <line x1="8" y1="23" x2="16" y2="23"/>
+    </svg>
+    <span id="mic-lbl">EIN</span>
+  </button>
+
+  <div class="bars" id="bars">
+    <div class="bar" id="b0" style="height:6px"></div>
+    <div class="bar" id="b1" style="height:12px"></div>
+    <div class="bar" id="b2" style="height:20px"></div>
+    <div class="bar" id="b3" style="height:12px"></div>
+    <div class="bar" id="b4" style="height:6px"></div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════
+//  KONFIGURATION
+// ═══════════════════════════════════════
+const LANGS = {
+  de: { code:'de-DE', flag:'🇩🇪' },
+  en: { code:'en-US', flag:'🇺🇸' },
+  es: { code:'es-ES', flag:'🇪🇸' },
+};
+
+// ── State ──
+let lang       = 'de';   // aktuelle Erkennungssprache
+let xlate      = false;  // Übersetzung an?
+let listening  = false;
+let rec        = null;
+let acc        = '';     // akkumulierter Text
+let barAnim    = null;
+const BAR_H    = [6,12,20,12,6];
+
+// ── DOM ──
+const pill     = document.getElementById('pill');
+const pillTxt  = document.getElementById('pill-txt');
+const cur      = document.getElementById('cur');
+const hist     = document.getElementById('hist');
+const micbtn   = document.getElementById('micbtn');
+const micLbl   = document.getElementById('mic-lbl');
+const barsEl   = document.getElementById('bars');
+const netWarn  = document.getElementById('net-warn');
+const tbtn     = document.getElementById('tbtn');
+const bars     = [0,1,2,3,4].map(i => document.getElementById('b'+i));
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) { setPill('er','Spracherkennung nicht verfügbar'); micbtn.disabled=true; }
+
+// ── Internet-Check: testet MyMemory direkt ──
+async function checkInternet() {
+  try {
+    const r = await fetch(
+      'https://api.mymemory.translated.net/get?q=test&langpair=en|de',
+      { cache:'no-store', mode:'cors' }
+    );
+    const d = await r.json();
+    return d.responseStatus === 200;
+  } catch(e) { return false; }
+}
+
+// ── Sprachauswahl ──
+function setLang(l) {
+  lang = l;
+  ['de','en','es'].forEach(x => document.getElementById('lb-'+x).classList.toggle('on', x===l));
+  if (listening) { stopMic(); startMic(); }
+}
+
+// ── Übersetzen ein/aus ──
+async function toggleTranslate() {
+  if (!xlate) {
+    tbtn.textContent = '⟳ Prüfe …';
+    tbtn.disabled = true;
+
+    // Teste ALLE APIs nacheinander
+    const apis = [
+      { name:'MyMemory', fn: () => fetch('https://api.mymemory.translated.net/get?q=hello&langpair=en|de',{mode:'cors',cache:'no-store'}).then(r=>r.json()).then(d=>d.responseStatus===200) },
+      { name:'FrAngly',  fn: () => fetch('https://api.funtranslations.com/translate/german.json?text=hello',{mode:'cors',cache:'no-store'}).then(r=>r.ok) },
+    ];
+
+    let working = null;
+    for (const api of apis) {
+      try {
+        const ok = await Promise.race([api.fn(), new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),5000))]);
+        if (ok) { working = api.name; break; }
+      } catch(e) {}
+    }
+
+    tbtn.disabled = false;
+
+    if (working) {
+      xlate = true;
+      tbtn.textContent = '✓ Übersetzen AN';
+      tbtn.classList.add('on');
+      netWarn.classList.remove('show');
+      netWarn.textContent = '';
+    } else {
+      xlate = false;
+      tbtn.textContent = '→🇩🇪 Übersetzen';
+      tbtn.classList.remove('on');
+      // Zeige genaue Fehlermeldung
+      netWarn.innerHTML =
+        '⚠ Übersetzungs-API nicht erreichbar.<br>' +
+        'Die App läuft als lokale Datei (file://) – Edge blockiert manche externe Dienste.<br>' +
+        '<strong>Lösung:</strong> Öffne die Datei über einen Link statt direkt – oder tippe unten auf "Trotzdem versuchen".&nbsp;' +
+        '<button onclick="forceTranslate()" style="margin-top:6px;padding:4px 10px;border-radius:6px;' +
+        'border:1px solid #ff9090;background:transparent;color:#ff9090;font-size:.75rem;cursor:pointer">' +
+        'Trotzdem versuchen</button>';
+      netWarn.classList.add('show');
+    }
+  } else {
+    xlate = false;
+    tbtn.textContent = '→🇩🇪 Übersetzen';
+    tbtn.classList.remove('on');
+    netWarn.classList.remove('show');
+  }
+}
+
+// Übersetzung erzwingen ohne Verbindungstest
+function forceTranslate() {
+  xlate = true;
+  tbtn.textContent = '✓ Übersetzen AN';
+  tbtn.classList.add('on');
+  netWarn.classList.remove('show');
+}
+
+// ── Übersetzung: versucht mehrere APIs ──
+async function translate(text) {
+  const from = lang;
+  const enc  = encodeURIComponent(text);
+
+  // API 1: MyMemory
+  try {
+    const r = await fetch(
+      'https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',
+      { mode:'cors' }
+    );
+    const d = await r.json();
+    if (d.responseStatus === 200) {
+      const t = (d.responseData?.translatedText||'').trim();
+      if (t && !t.startsWith('QUERY') && t.toUpperCase()!==text.toUpperCase()) return t;
+    }
+  } catch(e) {}
+
+  // API 2: Google Translate (inoffiziell)
+  try {
+    const r = await fetch(
+      'https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc
+    );
+    const d = await r.json();
+    if (Array.isArray(d) && d[0]) {
+      const t = d[0].map(c=>c[0]||'').join('').trim();
+      if (t) return t;
+    }
+  } catch(e) {}
+
+  // API 3: Lingva
+  try {
+    const r = await fetch('https://lingva.ml/api/v1/'+from+'/de/'+enc);
+    const d = await r.json();
+    if (d.translation) return d.translation.trim();
+  } catch(e) {}
+
+  return null;
+}
+
+// ── Mikrofon ──
+function toggleMic() {
+  if (!SR) return;
+  listening ? stopMic() : startMic();
+}
+
+function startMic() {
+  rec = new SR();
+  rec.lang           = LANGS[lang].code;
+  rec.continuous     = true;
+  rec.interimResults = true;
+
+  rec.onstart = () => {
+    listening = true;
+    acc = '';
+    micbtn.classList.add('on');
+    micLbl.textContent = 'AUS';
+    barsEl.classList.add('on');
+    setPill('on','● Hört zu …');
+    showCur('','');
+    startBars();
+  };
+
+  rec.onresult = async (e) => {
+    let interim = '', final = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) final += t;
+      else interim += t;
+    }
+
+    // Interim immer sofort anzeigen
+    if (interim) showCur(acc, interim);
+
+    if (final) {
+      acc += (acc ? ' ' : '') + final.trim();
+
+      if (xlate && lang !== 'de') {
+        // ── ÜBERSETZEN ──
+        const orig = acc.trim();
+        acc = '';
+
+        // Spinner anzeigen
+        cur.innerHTML = e2(orig)
+          + '<span style="display:block;font-size:.5em;color:var(--yellow);'
+          + 'letter-spacing:.1em;margin-top:6px">⟳ ÜBERSETZE …</span>';
+        setPill('tr','Übersetze …');
+
+        const result = await translate(orig);
+
+        if (result) {
+          // Erfolg → deutsch groß anzeigen
+          cur.innerHTML = e2(result) + '<span class="blink"></span>';
+          setPill('on','● Hört zu …');
+          addHist(orig, result);
+        } else {
+          // Fehlgeschlagen → Original + Fehlermeldung
+          cur.innerHTML = e2(orig)
+            + '<span style="display:block;font-size:.45em;color:var(--red);margin-top:6px">'
+            + '⚠ Übersetzung fehlgeschlagen – kein Internet?</span>';
+          setPill('er','Übersetzung fehlgeschlagen');
+          netWarn.classList.add('show');
+          addHist(orig, null);
+          setTimeout(() => { setPill('on','● Hört zu …'); netWarn.classList.remove('show'); }, 4000);
+        }
+      } else {
+        // ── KEIN ÜBERSETZEN ──
+        const flush = /[.!?,;]$/.test(acc.trim()) || acc.length > 100;
+        if (flush) {
+          addHist(acc.trim(), null);
+          acc = '';
+          showCur('','');
+        } else {
+          showCur(acc, '');
+        }
+      }
+    }
+  };
+
+  rec.onerror = (ev) => {
+    if (ev.error === 'no-speech') return;
+    if (ev.error === 'not-allowed') {
+      cur.innerHTML = '<span style="color:var(--red);font-size:.7em">'
+        + '⚠ Mikrofon verweigert – Einstellungen → Mikrofon → Erlauben</span>';
+      forceStop(); return;
+    }
+  };
+
+  rec.onend = () => { if (listening) { try { rec.start(); } catch(e){} } };
+
+  try { rec.start(); } catch(e) {
+    cur.innerHTML = '<span style="color:var(--red)">Fehler: ' + e.message + '</span>';
+  }
+}
+
+function stopMic() {
+  listening = false;
+  if (rec) { rec.onend = null; try { rec.stop(); } catch(e){} rec = null; }
+  micbtn.classList.remove('on');
+  micLbl.textContent = 'EIN';
+  barsEl.classList.remove('on');
+  setPill('','Bereit');
+  stopBars();
+  if (acc.trim()) { addHist(acc.trim(), null); acc = ''; }
+  cur.innerHTML = '<span class="hint">EIN drücken → sprechen</span>';
+}
+
+function forceStop() {
+  listening = false;
+  if (rec) { rec.onend = null; try { rec.abort(); } catch(e){} rec = null; }
+  micbtn.classList.remove('on');
+  micLbl.textContent = 'EIN';
+  barsEl.classList.remove('on');
+  stopBars(); acc = '';
+}
+
+// ── Render ──
+function e2(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function showCur(final, interim) {
+  cur.innerHTML =
+    (final  ? e2(final)+' ' : '') +
+    (interim ? '<span class="interim">'+e2(interim)+'</span>' : '') +
+    (listening ? '<span class="blink"></span>' : '');
+  if (!final && !interim)
+    cur.innerHTML = listening
+      ? '<span class="blink"></span>'
+      : '<span class="hint">EIN drücken → sprechen</span>';
+}
+
+function addHist(orig, transl) {
+  const d = document.createElement('div');
+  d.className = 'hline';
+  if (transl) {
+    d.innerHTML = e2(transl)
+      + '<span class="orig">' + (LANGS[lang]?.flag||'') + ' ' + e2(orig) + '</span>';
+  } else {
+    d.textContent = orig;
+  }
+  hist.appendChild(d);
+  hist.scrollTo({ top: hist.scrollHeight, behavior:'smooth' });
+}
+
+function clearAll() {
+  hist.innerHTML = '';
+  acc = '';
+  cur.innerHTML = listening
+    ? '<span class="blink"></span>'
+    : '<span class="hint">EIN drücken → sprechen</span>';
+}
+
+function setPill(cls, txt) {
+  pill.className = 'pill' + (cls ? ' '+cls : '');
+  pillTxt.textContent = txt;
+}
+
+// ── Pegelbalken ──
+function startBars() {
+  let t = 0;
+  (function f() {
+    t += .1;
+    bars.forEach((b,i) => {
+      b.style.height = (BAR_H[i] + Math.abs(Math.sin(t+i*.8))*(24-BAR_H[i])).toFixed(0)+'px';
+    });
+    barAnim = requestAnimationFrame(f);
+  })();
+}
+function stopBars() {
+  cancelAnimationFrame(barAnim);
+  bars.forEach((b,i) => b.style.height = BAR_H[i]+'px');
+}
+
+// ── Wake Lock (Bildschirm bleibt an) ──
+async function wakeLock() {
+  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch(e){}
+}
+wakeLock();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeLock(); });
+</script>
+</body>
+</html>
