@@ -109,6 +109,79 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 .bars{display:flex;align-items:center;gap:3px;height:36px;width:36px;justify-content:center}
 .bar{width:4px;border-radius:2px;background:rgba(0,255,80,.15);transition:background .3s}
 .bars.on .bar{background:var(--green);box-shadow:0 0 4px var(--green)}
+
+/* ── FULLSCREEN BUTTON ── */
+#fsbtn{
+  width:34px;height:34px;border-radius:8px;
+  border:1px solid var(--border);background:#000000;
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;touch-action:manipulation;color:var(--green);
+  flex-shrink:0;transition:all .2s;padding:0;
+}
+#fsbtn svg{width:16px;height:16px}
+#fsbtn:active{background:rgba(0,255,80,.1);border-color:var(--green)}
+
+/* ── VOLLBILD-MODUS: nur Untertitel sichtbar wie Even G1 ── */
+.fullscreen-mode .hdr,
+.fullscreen-mode .langbar,
+.fullscreen-mode #net-warn,
+.fullscreen-mode .hist,
+.fullscreen-mode .sep,
+.fullscreen-mode .cur-lbl,
+.fullscreen-mode .ctrl {
+  display: none !important;
+}
+.fullscreen-mode {
+  background: #000000 !important;
+  justify-content: flex-end;
+}
+.fullscreen-mode .cur-wrap {
+  padding: 0 20px 40px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.fullscreen-mode #cur {
+  font-size: clamp(1.8rem, 7vw, 3.2rem);
+  text-shadow: 0 0 30px rgba(0,255,80,.6);
+  line-height: 1.25;
+}
+
+/* Exit-Button im Vollbild unten rechts */
+.fullscreen-mode .fs-exit-hint {
+  display: flex !important;
+}
+.fs-exit-hint {
+  display: none;
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 999;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.fs-mic-btn {
+  width: 56px; height: 56px; border-radius: 50%;
+  border: 2px solid var(--border); background: #000000;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; touch-action: manipulation; color: var(--green);
+  transition: all .25s;
+}
+.fs-mic-btn.on {
+  border-color: var(--green);
+  box-shadow: 0 0 16px rgba(0,255,80,.3);
+  animation: pu 2s ease-out infinite;
+}
+.fs-mic-btn svg { width: 22px; height: 22px; }
+.fs-exit-btn {
+  width: 40px; height: 40px; border-radius: 8px;
+  border: 1px solid var(--border); background: #000000;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; touch-action: manipulation; color: var(--dim);
+}
+.fs-exit-btn svg { width: 16px; height: 16px; }
 </style>
 </head>
 <body>
@@ -116,7 +189,19 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 <!-- HEADER -->
 <div class="hdr">
   <div class="logo">Hör<b>Brücke</b></div>
-  <div class="pill" id="pill"><div class="dot"></div><span id="pill-txt">Bereit</span></div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <div class="pill" id="pill"><div class="dot"></div><span id="pill-txt">Bereit</span></div>
+    <button id="fsbtn" onclick="toggleFullscreen()" title="Vollbild">
+      <svg id="fs-icon-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
+        <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+      </svg>
+      <svg id="fs-icon-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+        <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
+        <line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/>
+      </svg>
+    </button>
+  </div>
 </div>
 
 <!-- INTERNET WARNUNG -->
@@ -169,6 +254,24 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
     <div class="bar" id="b3" style="height:12px"></div>
     <div class="bar" id="b4" style="height:6px"></div>
   </div>
+</div>
+
+<!-- VOLLBILD EXIT + MIC OVERLAY -->
+<div class="fs-exit-hint" id="fs-hint">
+  <button class="fs-mic-btn" id="fs-mic" onclick="toggleMic()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+      <line x1="12" y1="19" x2="12" y2="23"/>
+      <line x1="8" y1="23" x2="16" y2="23"/>
+    </svg>
+  </button>
+  <button class="fs-exit-btn" onclick="toggleFullscreen()" title="Vollbild beenden">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
+      <line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/>
+    </svg>
+  </button>
 </div>
 
 <script>
@@ -583,6 +686,54 @@ function stopBars(){
   cancelAnimationFrame(barAnim);
   bars.forEach((b,i)=>b.style.height=BAR_H[i]+'px');
 }
+
+// ── Vollbild ──
+let isFS = false;
+const fsMicBtn = document.getElementById('fs-mic');
+
+function toggleFullscreen() {
+  isFS = !isFS;
+  document.body.classList.toggle('fullscreen-mode', isFS);
+
+  // Icons tauschen
+  document.getElementById('fs-icon-enter').style.display = isFS ? 'none'  : 'block';
+  document.getElementById('fs-icon-exit').style.display  = isFS ? 'block' : 'none';
+
+  // Browser Fullscreen API (versteckt Adressleiste)
+  if (isFS) {
+    const el = document.documentElement;
+    if (el.requestFullscreen)            el.requestFullscreen();
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else if (el.mozRequestFullScreen)    el.mozRequestFullScreen();
+  } else {
+    if (document.exitFullscreen)            document.exitFullscreen();
+    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    else if (document.mozCancelFullScreen)  document.mozCancelFullScreen();
+  }
+}
+
+// Vollbild-MicBtn synchron halten
+function syncFsMic() {
+  if (!fsMicBtn) return;
+  fsMicBtn.classList.toggle('on', listening);
+}
+
+// Original setUI erweitern
+const _origSetUI = setUI;
+function setUI(on) {
+  _origSetUI(on);
+  syncFsMic();
+}
+
+// Fullscreen-Änderung von außen (z.B. Escape-Taste)
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && isFS) {
+    isFS = false;
+    document.body.classList.remove('fullscreen-mode');
+    document.getElementById('fs-icon-enter').style.display = 'block';
+    document.getElementById('fs-icon-exit').style.display  = 'none';
+  }
+});
 
 async function wakeLock(){
   try{if('wakeLock' in navigator) await navigator.wakeLock.request('screen');}catch(e){}
