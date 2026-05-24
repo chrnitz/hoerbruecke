@@ -640,6 +640,9 @@ function setUI(on) {
   micLbl.textContent = on ? 'AUS' : 'EIN';
   barsEl.classList.toggle('on', on);
   if (!on) { stopBars(); setPill('','Bereit'); }
+  // Vollbild-Mic-Button synchron halten
+  const fmb = document.getElementById('fs-mic');
+  if (fmb) fmb.classList.toggle('on', on);
 }
 
 function e2(s){
@@ -716,13 +719,6 @@ function toggleFullscreen() {
 function syncFsMic() {
   if (!fsMicBtn) return;
   fsMicBtn.classList.toggle('on', listening);
-}
-
-// Original setUI erweitern
-const _origSetUI = setUI;
-function setUI(on) {
-  _origSetUI(on);
-  syncFsMic();
 }
 
 // Fullscreen-Änderung von außen (z.B. Escape-Taste)
