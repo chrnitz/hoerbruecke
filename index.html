@@ -172,46 +172,53 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 </div>
 
 <script>
-// ═══════════════════════════════════════
-//  KONFIGURATION
-// ═══════════════════════════════════════
+// ═══════════════════════════════════════════════════
+//  HörBrücke – optimiert für Android Samsung + iPhone
+// ═══════════════════════════════════════════════════
+
 const LANGS = {
   de: { code:'de-DE', flag:'🇩🇪' },
   en: { code:'en-US', flag:'🇺🇸' },
   es: { code:'es-ES', flag:'🇪🇸' },
 };
 
+// ── Gerät erkennen ──
+const isAndroid = /android/i.test(navigator.userAgent);
+const isIOS     = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
 // ── State ──
-let lang       = 'de';   // aktuelle Erkennungssprache
-let xlate      = false;  // Übersetzung an?
-let listening  = false;
-let rec        = null;
-let acc        = '';     // akkumulierter Text
-let barAnim    = null;
-const BAR_H    = [6,12,20,12,6];
+let lang      = 'de';
+let xlate     = false;
+let listening = false;
+let rec       = null;
+let acc       = '';
+let barAnim   = null;
+let hideTimer = null;   // Timer zum Ausblenden
+let lastShown = '';     // letzter angezeigter Text (Duplikatschutz)
+let sessionResults = new Set(); // alle finalen Texte dieser Session
+
+const BAR_H = [6,12,20,12,6];
 
 // ── DOM ──
-const pill     = document.getElementById('pill');
-const pillTxt  = document.getElementById('pill-txt');
-const cur      = document.getElementById('cur');
-const hist     = document.getElementById('hist');
-const micbtn   = document.getElementById('micbtn');
-const micLbl   = document.getElementById('mic-lbl');
-const barsEl   = document.getElementById('bars');
-const netWarn  = document.getElementById('net-warn');
-const tbtn     = document.getElementById('tbtn');
-const bars     = [0,1,2,3,4].map(i => document.getElementById('b'+i));
+const pill    = document.getElementById('pill');
+const pillTxt = document.getElementById('pill-txt');
+const cur     = document.getElementById('cur');
+const hist    = document.getElementById('hist');
+const micbtn  = document.getElementById('micbtn');
+const micLbl  = document.getElementById('mic-lbl');
+const barsEl  = document.getElementById('bars');
+const netWarn = document.getElementById('net-warn');
+const tbtn    = document.getElementById('tbtn');
+const bars    = [0,1,2,3,4].map(i => document.getElementById('b'+i));
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 if (!SR) { setPill('er','Spracherkennung nicht verfügbar'); micbtn.disabled=true; }
 
-// ── Internet-Check: testet MyMemory direkt ──
+// ── Internet-Check ──
 async function checkInternet() {
   try {
-    const r = await fetch(
-      'https://api.mymemory.translated.net/get?q=test&langpair=en|de',
-      { cache:'no-store', mode:'cors' }
-    );
+    const r = await fetch('https://api.mymemory.translated.net/get?q=test&langpair=en|de',
+      { cache:'no-store', mode:'cors' });
     const d = await r.json();
     return d.responseStatus === 200;
   } catch(e) { return false; }
@@ -220,8 +227,9 @@ async function checkInternet() {
 // ── Sprachauswahl ──
 function setLang(l) {
   lang = l;
-  ['de','en','es'].forEach(x => document.getElementById('lb-'+x).classList.toggle('on', x===l));
-  if (listening) { stopMic(); startMic(); }
+  ['de','en','es'].forEach(x =>
+    document.getElementById('lb-'+x).classList.toggle('on', x===l));
+  if (listening) { stopMic(); setTimeout(startMic, 300); }
 }
 
 // ── Übersetzen ein/aus ──
@@ -229,41 +237,29 @@ async function toggleTranslate() {
   if (!xlate) {
     tbtn.textContent = '⟳ Prüfe …';
     tbtn.disabled = true;
-
-    // Teste ALLE APIs nacheinander
-    const apis = [
-      { name:'MyMemory', fn: () => fetch('https://api.mymemory.translated.net/get?q=hello&langpair=en|de',{mode:'cors',cache:'no-store'}).then(r=>r.json()).then(d=>d.responseStatus===200) },
-      { name:'FrAngly',  fn: () => fetch('https://api.funtranslations.com/translate/german.json?text=hello',{mode:'cors',cache:'no-store'}).then(r=>r.ok) },
-    ];
-
-    let working = null;
-    for (const api of apis) {
-      try {
-        const ok = await Promise.race([api.fn(), new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),5000))]);
-        if (ok) { working = api.name; break; }
-      } catch(e) {}
-    }
-
+    let working = false;
+    try {
+      const ok = await Promise.race([
+        fetch('https://api.mymemory.translated.net/get?q=hello&langpair=en|de',
+          {mode:'cors',cache:'no-store'}).then(r=>r.json()).then(d=>d.responseStatus===200),
+        new Promise((_,r)=>setTimeout(()=>r(new Error),5000))
+      ]);
+      working = !!ok;
+    } catch(e) {}
     tbtn.disabled = false;
-
     if (working) {
       xlate = true;
       tbtn.textContent = '✓ Übersetzen AN';
       tbtn.classList.add('on');
       netWarn.classList.remove('show');
-      netWarn.textContent = '';
     } else {
       xlate = false;
       tbtn.textContent = '→🇩🇪 Übersetzen';
       tbtn.classList.remove('on');
-      // Zeige genaue Fehlermeldung
-      netWarn.innerHTML =
-        '⚠ Übersetzungs-API nicht erreichbar.<br>' +
-        'Die App läuft als lokale Datei (file://) – Edge blockiert manche externe Dienste.<br>' +
-        '<strong>Lösung:</strong> Öffne die Datei über einen Link statt direkt – oder tippe unten auf "Trotzdem versuchen".&nbsp;' +
-        '<button onclick="forceTranslate()" style="margin-top:6px;padding:4px 10px;border-radius:6px;' +
-        'border:1px solid #ff9090;background:transparent;color:#ff9090;font-size:.75rem;cursor:pointer">' +
-        'Trotzdem versuchen</button>';
+      netWarn.innerHTML = '⚠ Übersetzungs-API nicht erreichbar. '
+        + '<button onclick="forceTranslate()" style="padding:3px 8px;border-radius:5px;'
+        + 'border:1px solid #ff8080;background:transparent;color:#ff8080;cursor:pointer">'
+        + 'Trotzdem versuchen</button>';
       netWarn.classList.add('show');
     }
   } else {
@@ -274,7 +270,6 @@ async function toggleTranslate() {
   }
 }
 
-// Übersetzung erzwingen ohne Verbindungstest
 function forceTranslate() {
   xlate = true;
   tbtn.textContent = '✓ Übersetzen AN';
@@ -282,44 +277,44 @@ function forceTranslate() {
   netWarn.classList.remove('show');
 }
 
-// ── Übersetzung: versucht mehrere APIs ──
+// ── Übersetzung ──
 async function translate(text) {
   const from = lang;
   const enc  = encodeURIComponent(text);
-
-  // API 1: MyMemory
   try {
     const r = await fetch(
       'https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',
-      { mode:'cors' }
-    );
+      {mode:'cors'});
     const d = await r.json();
     if (d.responseStatus === 200) {
       const t = (d.responseData?.translatedText||'').trim();
       if (t && !t.startsWith('QUERY') && t.toUpperCase()!==text.toUpperCase()) return t;
     }
   } catch(e) {}
-
-  // API 2: Google Translate (inoffiziell)
   try {
     const r = await fetch(
-      'https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc
-    );
+      'https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
     const d = await r.json();
     if (Array.isArray(d) && d[0]) {
       const t = d[0].map(c=>c[0]||'').join('').trim();
       if (t) return t;
     }
   } catch(e) {}
-
-  // API 3: Lingva
-  try {
-    const r = await fetch('https://lingva.ml/api/v1/'+from+'/de/'+enc);
-    const d = await r.json();
-    if (d.translation) return d.translation.trim();
-  } catch(e) {}
-
   return null;
+}
+
+// ── Duplikat-Prüfung ──
+function isDuplicate(text) {
+  const clean = text.trim().toLowerCase();
+  if (!clean) return true;
+  // Exakter Duplikat
+  if (sessionResults.has(clean)) return true;
+  // Ist der Text bereits am Ende von acc?
+  const accClean = acc.toLowerCase().trim();
+  if (accClean.endsWith(clean)) return true;
+  // Ähnlichkeit > 85% (Levensthein-Annäherung via includes)
+  if (clean.length > 5 && accClean.includes(clean)) return true;
+  return false;
 }
 
 // ── Mikrofon ──
@@ -329,122 +324,136 @@ function toggleMic() {
 }
 
 function startMic() {
+  sessionResults.clear();
+  acc = '';
+  lastShown = '';
+
   rec = new SR();
   rec.lang           = LANGS[lang].code;
-  rec.continuous     = true;
   rec.interimResults = true;
+
+  // Android: continuous=false verhindert Überlappungen
+  // iOS: continuous=true für Echtzeit-Feeling
+  rec.continuous = !isAndroid;
 
   rec.onstart = () => {
     listening = true;
-    acc = '';
-    lastFinalIndex = -1;
-    lastInterim = '';
     micbtn.classList.add('on');
     micLbl.textContent = 'AUS';
     barsEl.classList.add('on');
     setPill('on','● Hört zu …');
-    showCur('','');
     startBars();
+    if (!cur.textContent || cur.querySelector('.hint')) {
+      showCur('', '');
+    }
   };
-
-  // Android/Samsung-Fix: merkt sich alle finalen Segmente um Duplikate zu vermeiden
-  let lastFinalIndex = -1;
-  let lastInterim = '';
 
   rec.onresult = async (e) => {
     let interim = '';
-    let newFinals = [];
+    let finals  = [];
 
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const seg = e.results[i];
       const t   = seg[0].transcript.trim();
       if (!t) continue;
-
-      if (seg.isFinal) {
-        // Nur neue finale Segmente verarbeiten – Duplikate ignorieren
-        if (i > lastFinalIndex) {
-          lastFinalIndex = i;
-          newFinals.push(t);
-        }
-      } else {
-        interim = t;
-      }
+      if (seg.isFinal) finals.push(t);
+      else interim = t;
     }
 
-    // Interim anzeigen – aber nur wenn wirklich neu
-    if (interim && interim !== lastInterim) {
-      lastInterim = interim;
-      showCur(acc, interim);
-    }
+    // Interim sofort anzeigen
+    if (interim) showCur(acc, interim);
 
     // Finale Segmente verarbeiten
-    for (const final of newFinals) {
-      lastInterim = '';
-
-      // Duplikat-Schutz: prüfe ob finaler Text bereits in acc enthalten ist
-      const accLow   = acc.toLowerCase().trim();
-      const finalLow = final.toLowerCase();
-      if (accLow.endsWith(finalLow)) continue; // bereits drin – überspringen
-
-      acc += (acc ? ' ' : '') + final;
+    for (const txt of finals) {
+      if (isDuplicate(txt)) continue; // Duplikat überspringen
+      sessionResults.add(txt.toLowerCase());
+      acc += (acc ? ' ' : '') + txt;
 
       if (xlate && lang !== 'de') {
-        // ── ÜBERSETZEN ──
         const orig = acc.trim();
         acc = '';
-
         cur.innerHTML = e2(orig)
-          + '<span style="display:block;font-size:.5em;color:var(--yellow);'
-          + 'letter-spacing:.1em;margin-top:6px">⟳ ÜBERSETZE …</span>';
+          + '<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
         setPill('tr','Übersetze …');
-
         const result = await translate(orig);
-
         if (result) {
-          cur.innerHTML = e2(result) + '<span class="blink"></span>';
+          zeigText(result);
           setPill('on','● Hört zu …');
           addHist(orig, result);
         } else {
-          cur.innerHTML = e2(orig)
-            + '<span style="display:block;font-size:.45em;color:var(--red);margin-top:6px">'
-            + '⚠ Übersetzung fehlgeschlagen – kein Internet?</span>';
-          setPill('er','Übersetzung fehlgeschlagen');
-          netWarn.classList.add('show');
+          zeigText(orig);
           addHist(orig, null);
-          setTimeout(() => { setPill('on','● Hört zu …'); netWarn.classList.remove('show'); }, 4000);
+          setPill('on','● Hört zu …');
         }
       } else {
-        // ── KEIN ÜBERSETZEN ──
-        const flush = /[.!?,;]$/.test(acc.trim()) || acc.length > 120;
+        // Ohne Übersetzung: bei Satzende in Verlauf – sonst anzeigen
+        const flush = /[.!?,;]$/.test(acc.trim()) || acc.length > 130;
         if (flush) {
+          zeigText(acc.trim());
           addHist(acc.trim(), null);
           acc = '';
-          showCur('','');
         } else {
-          showCur(acc, '');
+          zeigText(acc);
         }
       }
+    }
+
+    // Android: nach jedem Segment neu starten für saubere Erkennung
+    if (isAndroid && finals.length > 0 && listening) {
+      try { rec.stop(); } catch(e) {}
     }
   };
 
   rec.onerror = (ev) => {
-    if (ev.error === 'no-speech') return;
+    if (ev.error === 'no-speech') {
+      // Auf Android bei Stille neu starten
+      if (isAndroid && listening) {
+        try { rec.stop(); } catch(e) {}
+      }
+      return;
+    }
     if (ev.error === 'not-allowed') {
       cur.innerHTML = '<span style="color:var(--red);font-size:.7em">'
         + '⚠ Mikrofon verweigert – Einstellungen → Mikrofon → Erlauben</span>';
-      forceStop(); return;
+      forceStop();
     }
   };
 
-  rec.onend = () => { if (listening) { try { rec.start(); } catch(e){} } };
+  rec.onend = () => {
+    // Automatisch neu starten solange Benutzer aufnehmen möchte
+    if (listening) {
+      // Kurze Pause damit Android sich erholt
+      setTimeout(() => {
+        if (!listening) return;
+        try {
+          rec = new SR();
+          rec.lang           = LANGS[lang].code;
+          rec.interimResults = true;
+          rec.continuous     = !isAndroid;
+          rec.onstart  = arguments.callee; // wird überschrieben – OK
+          attachHandlers(rec);
+          rec.start();
+        } catch(e) {}
+      }, isAndroid ? 400 : 150);
+    }
+  };
 
+  attachHandlers(rec);
   try { rec.start(); } catch(e) {
-    cur.innerHTML = '<span style="color:var(--red)">Fehler: ' + e.message + '</span>';
+    cur.innerHTML = '<span style="color:var(--red)">Fehler: '+e.message+'</span>';
   }
+}
+
+// Handlers separat damit onend sie wiederverwenden kann
+function attachHandlers(r) {
+  r.onresult = rec.onresult;
+  r.onerror  = rec.onerror;
+  r.onstart  = rec.onstart;
 }
 
 function stopMic() {
   listening = false;
+  clearTimeout(hideTimer);
   if (rec) { rec.onend = null; try { rec.stop(); } catch(e){} rec = null; }
   micbtn.classList.remove('on');
   micLbl.textContent = 'EIN';
@@ -457,6 +466,7 @@ function stopMic() {
 
 function forceStop() {
   listening = false;
+  clearTimeout(hideTimer);
   if (rec) { rec.onend = null; try { rec.abort(); } catch(e){} rec = null; }
   micbtn.classList.remove('on');
   micLbl.textContent = 'EIN';
@@ -464,11 +474,25 @@ function forceStop() {
   stopBars(); acc = '';
 }
 
+// ── Text anzeigen mit Haltezeit ──
+function zeigText(text) {
+  clearTimeout(hideTimer);
+  cur.innerHTML = e2(text) + '<span class="blink"></span>';
+  lastShown = text;
+  // Text bleibt 6 Sekunden stehen bevor er verblasst
+  hideTimer = setTimeout(() => {
+    if (!listening) return;
+    cur.innerHTML = '<span class="blink"></span>';
+  }, 6000);
+}
+
 // ── Render ──
 function e2(s) {
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
 function showCur(final, interim) {
+  clearTimeout(hideTimer);
   cur.innerHTML =
     (final  ? e2(final)+' ' : '') +
     (interim ? '<span class="interim">'+e2(interim)+'</span>' : '') +
@@ -484,24 +508,27 @@ function addHist(orig, transl) {
   d.className = 'hline';
   if (transl) {
     d.innerHTML = e2(transl)
-      + '<span class="orig">' + (LANGS[lang]?.flag||'') + ' ' + e2(orig) + '</span>';
+      + '<span class="orig">'+(LANGS[lang]?.flag||'')+' '+e2(orig)+'</span>';
   } else {
     d.textContent = orig;
   }
   hist.appendChild(d);
-  hist.scrollTo({ top: hist.scrollHeight, behavior:'smooth' });
+  hist.scrollTo({top:hist.scrollHeight, behavior:'smooth'});
 }
 
 function clearAll() {
   hist.innerHTML = '';
   acc = '';
+  sessionResults.clear();
+  lastShown = '';
+  clearTimeout(hideTimer);
   cur.innerHTML = listening
     ? '<span class="blink"></span>'
     : '<span class="hint">EIN drücken → sprechen</span>';
 }
 
 function setPill(cls, txt) {
-  pill.className = 'pill' + (cls ? ' '+cls : '');
+  pill.className = 'pill'+(cls?' '+cls:'');
   pillTxt.textContent = txt;
 }
 
@@ -511,7 +538,7 @@ function startBars() {
   (function f() {
     t += .1;
     bars.forEach((b,i) => {
-      b.style.height = (BAR_H[i] + Math.abs(Math.sin(t+i*.8))*(24-BAR_H[i])).toFixed(0)+'px';
+      b.style.height = (BAR_H[i]+Math.abs(Math.sin(t+i*.8))*(24-BAR_H[i])).toFixed(0)+'px';
     });
     barAnim = requestAnimationFrame(f);
   })();
@@ -521,7 +548,7 @@ function stopBars() {
   bars.forEach((b,i) => b.style.height = BAR_H[i]+'px');
 }
 
-// ── Wake Lock (Bildschirm bleibt an) ──
+// ── Wake Lock ──
 async function wakeLock() {
   try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch(e){}
 }
