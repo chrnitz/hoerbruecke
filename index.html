@@ -337,6 +337,8 @@ function startMic() {
   rec.onstart = () => {
     listening = true;
     acc = '';
+    lastFinalIndex = -1;
+    lastInterim = '';
     micbtn.classList.add('on');
     micLbl.textContent = 'AUS';
     barsEl.classList.add('on');
@@ -345,26 +347,52 @@ function startMic() {
     startBars();
   };
 
+  // Android/Samsung-Fix: merkt sich alle finalen Segmente um Duplikate zu vermeiden
+  let lastFinalIndex = -1;
+  let lastInterim = '';
+
   rec.onresult = async (e) => {
-    let interim = '', final = '';
+    let interim = '';
+    let newFinals = [];
+
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      const t = e.results[i][0].transcript;
-      if (e.results[i].isFinal) final += t;
-      else interim += t;
+      const seg = e.results[i];
+      const t   = seg[0].transcript.trim();
+      if (!t) continue;
+
+      if (seg.isFinal) {
+        // Nur neue finale Segmente verarbeiten – Duplikate ignorieren
+        if (i > lastFinalIndex) {
+          lastFinalIndex = i;
+          newFinals.push(t);
+        }
+      } else {
+        interim = t;
+      }
     }
 
-    // Interim immer sofort anzeigen
-    if (interim) showCur(acc, interim);
+    // Interim anzeigen – aber nur wenn wirklich neu
+    if (interim && interim !== lastInterim) {
+      lastInterim = interim;
+      showCur(acc, interim);
+    }
 
-    if (final) {
-      acc += (acc ? ' ' : '') + final.trim();
+    // Finale Segmente verarbeiten
+    for (const final of newFinals) {
+      lastInterim = '';
+
+      // Duplikat-Schutz: prüfe ob finaler Text bereits in acc enthalten ist
+      const accLow   = acc.toLowerCase().trim();
+      const finalLow = final.toLowerCase();
+      if (accLow.endsWith(finalLow)) continue; // bereits drin – überspringen
+
+      acc += (acc ? ' ' : '') + final;
 
       if (xlate && lang !== 'de') {
         // ── ÜBERSETZEN ──
         const orig = acc.trim();
         acc = '';
 
-        // Spinner anzeigen
         cur.innerHTML = e2(orig)
           + '<span style="display:block;font-size:.5em;color:var(--yellow);'
           + 'letter-spacing:.1em;margin-top:6px">⟳ ÜBERSETZE …</span>';
@@ -373,12 +401,10 @@ function startMic() {
         const result = await translate(orig);
 
         if (result) {
-          // Erfolg → deutsch groß anzeigen
           cur.innerHTML = e2(result) + '<span class="blink"></span>';
           setPill('on','● Hört zu …');
           addHist(orig, result);
         } else {
-          // Fehlgeschlagen → Original + Fehlermeldung
           cur.innerHTML = e2(orig)
             + '<span style="display:block;font-size:.45em;color:var(--red);margin-top:6px">'
             + '⚠ Übersetzung fehlgeschlagen – kein Internet?</span>';
@@ -389,7 +415,7 @@ function startMic() {
         }
       } else {
         // ── KEIN ÜBERSETZEN ──
-        const flush = /[.!?,;]$/.test(acc.trim()) || acc.length > 100;
+        const flush = /[.!?,;]$/.test(acc.trim()) || acc.length > 120;
         if (flush) {
           addHist(acc.trim(), null);
           acc = '';
