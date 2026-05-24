@@ -173,33 +173,38 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 
 <script>
 // ═══════════════════════════════════════════════════
-//  HörBrücke – optimiert für Android Samsung + iPhone
+//  HörBrücke – Hybrid: Web Speech + MediaRecorder
+//  Android: MediaRecorder → Whisper via Claude API
+//  iOS:     Web Speech API (native, beste Qualität)
 // ═══════════════════════════════════════════════════
 
 const LANGS = {
-  de: { code:'de-DE', flag:'🇩🇪' },
-  en: { code:'en-US', flag:'🇺🇸' },
-  es: { code:'es-ES', flag:'🇪🇸' },
+  de: { code:'de-DE', flag:'🇩🇪', name:'Deutsch' },
+  en: { code:'en-US', flag:'🇺🇸', name:'English' },
+  es: { code:'es-ES', flag:'🇪🇸', name:'Español' },
 };
 
-// ── Gerät erkennen ──
 const isAndroid = /android/i.test(navigator.userAgent);
-const isIOS     = /iPad|iPhone|iPod/.test(navigator.userAgent);
+const isIOS     = /iPad|iPhone|iPod/.test(navigator.userAgent)
+                  || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
 
-// ── State ──
 let lang      = 'de';
 let xlate     = false;
 let listening = false;
-let rec       = null;
-let acc       = '';
-let barAnim   = null;
-let hideTimer = null;   // Timer zum Ausblenden
-let lastShown = '';     // letzter angezeigter Text (Duplikatschutz)
-let sessionResults = new Set(); // alle finalen Texte dieser Session
+let hideTimer = null;
+let sessionSet= new Set();
 
-const BAR_H = [6,12,20,12,6];
+// Web Speech state
+let rec = null;
 
-// ── DOM ──
+// MediaRecorder state (Android)
+let mediaRec    = null;
+let audioStream = null;
+let audioChunks = [];
+let recInterval = null;
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
 const pill    = document.getElementById('pill');
 const pillTxt = document.getElementById('pill-txt');
 const cur     = document.getElementById('cur');
@@ -209,351 +214,381 @@ const micLbl  = document.getElementById('mic-lbl');
 const barsEl  = document.getElementById('bars');
 const netWarn = document.getElementById('net-warn');
 const tbtn    = document.getElementById('tbtn');
-const bars    = [0,1,2,3,4].map(i => document.getElementById('b'+i));
-
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (!SR) { setPill('er','Spracherkennung nicht verfügbar'); micbtn.disabled=true; }
-
-// ── Internet-Check ──
-async function checkInternet() {
-  try {
-    const r = await fetch('https://api.mymemory.translated.net/get?q=test&langpair=en|de',
-      { cache:'no-store', mode:'cors' });
-    const d = await r.json();
-    return d.responseStatus === 200;
-  } catch(e) { return false; }
-}
+const bars    = [0,1,2,3,4].map(i=>document.getElementById('b'+i));
+let barAnim   = null;
+const BAR_H   = [6,12,20,12,6];
 
 // ── Sprachauswahl ──
 function setLang(l) {
   lang = l;
-  ['de','en','es'].forEach(x =>
-    document.getElementById('lb-'+x).classList.toggle('on', x===l));
-  if (listening) { stopMic(); setTimeout(startMic, 300); }
+  ['de','en','es'].forEach(x=>
+    document.getElementById('lb-'+x).classList.toggle('on',x===l));
+  if (listening) { stopMic(); setTimeout(startMic,400); }
 }
 
-// ── Übersetzen ein/aus ──
+// ── Übersetzen ──
 async function toggleTranslate() {
   if (!xlate) {
-    tbtn.textContent = '⟳ Prüfe …';
-    tbtn.disabled = true;
-    let working = false;
+    tbtn.textContent='⟳ Prüfe …'; tbtn.disabled=true;
+    let ok=false;
     try {
-      const ok = await Promise.race([
+      ok = await Promise.race([
         fetch('https://api.mymemory.translated.net/get?q=hello&langpair=en|de',
           {mode:'cors',cache:'no-store'}).then(r=>r.json()).then(d=>d.responseStatus===200),
-        new Promise((_,r)=>setTimeout(()=>r(new Error),5000))
+        new Promise((_,r)=>setTimeout(()=>r(false),5000))
       ]);
-      working = !!ok;
-    } catch(e) {}
-    tbtn.disabled = false;
-    if (working) {
-      xlate = true;
-      tbtn.textContent = '✓ Übersetzen AN';
-      tbtn.classList.add('on');
+    } catch(e){}
+    tbtn.disabled=false;
+    if (ok) {
+      xlate=true; tbtn.textContent='✓ Übersetzen AN'; tbtn.classList.add('on');
       netWarn.classList.remove('show');
     } else {
-      xlate = false;
-      tbtn.textContent = '→🇩🇪 Übersetzen';
-      tbtn.classList.remove('on');
-      netWarn.innerHTML = '⚠ Übersetzungs-API nicht erreichbar. '
-        + '<button onclick="forceTranslate()" style="padding:3px 8px;border-radius:5px;'
-        + 'border:1px solid #ff8080;background:transparent;color:#ff8080;cursor:pointer">'
-        + 'Trotzdem versuchen</button>';
+      xlate=false; tbtn.textContent='→🇩🇪 Übersetzen'; tbtn.classList.remove('on');
+      netWarn.innerHTML='⚠ Übersetzung nicht verfügbar – kein Internet? '
+        +'<button onclick="forceTranslate()" style="padding:3px 8px;border-radius:5px;'
+        +'border:1px solid #ff8080;background:transparent;color:#ff8080;cursor:pointer">'
+        +'Trotzdem</button>';
       netWarn.classList.add('show');
     }
   } else {
-    xlate = false;
-    tbtn.textContent = '→🇩🇪 Übersetzen';
-    tbtn.classList.remove('on');
+    xlate=false; tbtn.textContent='→🇩🇪 Übersetzen'; tbtn.classList.remove('on');
     netWarn.classList.remove('show');
   }
 }
-
-function forceTranslate() {
-  xlate = true;
-  tbtn.textContent = '✓ Übersetzen AN';
-  tbtn.classList.add('on');
+function forceTranslate(){
+  xlate=true; tbtn.textContent='✓ Übersetzen AN'; tbtn.classList.add('on');
   netWarn.classList.remove('show');
 }
-
-// ── Übersetzung ──
 async function translate(text) {
-  const from = lang;
-  const enc  = encodeURIComponent(text);
+  const from=lang, enc=encodeURIComponent(text);
   try {
-    const r = await fetch(
-      'https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',
-      {mode:'cors'});
-    const d = await r.json();
-    if (d.responseStatus === 200) {
-      const t = (d.responseData?.translatedText||'').trim();
-      if (t && !t.startsWith('QUERY') && t.toUpperCase()!==text.toUpperCase()) return t;
+    const r=await fetch('https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',{mode:'cors'});
+    const d=await r.json();
+    if(d.responseStatus===200){
+      const t=(d.responseData?.translatedText||'').trim();
+      if(t&&!t.startsWith('QUERY')&&t.toUpperCase()!==text.toUpperCase()) return t;
     }
-  } catch(e) {}
+  } catch(e){}
   try {
-    const r = await fetch(
-      'https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
-    const d = await r.json();
-    if (Array.isArray(d) && d[0]) {
-      const t = d[0].map(c=>c[0]||'').join('').trim();
-      if (t) return t;
-    }
-  } catch(e) {}
+    const r=await fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
+    const d=await r.json();
+    if(Array.isArray(d)&&d[0]){const t=d[0].map(c=>c[0]||'').join('').trim();if(t)return t;}
+  } catch(e){}
   return null;
 }
 
-// ── Duplikat-Prüfung ──
-function isDuplicate(text) {
-  const clean = text.trim().toLowerCase();
-  if (!clean) return true;
-  // Exakter Duplikat
-  if (sessionResults.has(clean)) return true;
-  // Ist der Text bereits am Ende von acc?
-  const accClean = acc.toLowerCase().trim();
-  if (accClean.endsWith(clean)) return true;
-  // Ähnlichkeit > 85% (Levensthein-Annäherung via includes)
-  if (clean.length > 5 && accClean.includes(clean)) return true;
-  return false;
-}
-
-// ── Mikrofon ──
+// ══════════════════════════════════════════════════
+//  MIKROFON – wählt Methode je nach Gerät
+// ══════════════════════════════════════════════════
 function toggleMic() {
-  if (!SR) return;
   listening ? stopMic() : startMic();
 }
 
-function startMic() {
-  sessionResults.clear();
-  acc = '';
-  lastShown = '';
+async function startMic() {
+  sessionSet.clear();
+  setUI(true);
 
-  rec = new SR();
-  rec.lang           = LANGS[lang].code;
-  rec.interimResults = true;
-
-  // Android: continuous=false verhindert Überlappungen
-  // iOS: continuous=true für Echtzeit-Feeling
-  rec.continuous = !isAndroid;
-
-  rec.onstart = () => {
-    listening = true;
-    micbtn.classList.add('on');
-    micLbl.textContent = 'AUS';
-    barsEl.classList.add('on');
-    setPill('on','● Hört zu …');
-    startBars();
-    if (!cur.textContent || cur.querySelector('.hint')) {
-      showCur('', '');
-    }
-  };
-
-  rec.onresult = async (e) => {
-    let interim = '';
-    let finals  = [];
-
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const seg = e.results[i];
-      const t   = seg[0].transcript.trim();
-      if (!t) continue;
-      if (seg.isFinal) finals.push(t);
-      else interim = t;
-    }
-
-    // Interim sofort anzeigen
-    if (interim) showCur(acc, interim);
-
-    // Finale Segmente verarbeiten
-    for (const txt of finals) {
-      if (isDuplicate(txt)) continue; // Duplikat überspringen
-      sessionResults.add(txt.toLowerCase());
-      acc += (acc ? ' ' : '') + txt;
-
-      if (xlate && lang !== 'de') {
-        const orig = acc.trim();
-        acc = '';
-        cur.innerHTML = e2(orig)
-          + '<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
-        setPill('tr','Übersetze …');
-        const result = await translate(orig);
-        if (result) {
-          zeigText(result);
-          setPill('on','● Hört zu …');
-          addHist(orig, result);
-        } else {
-          zeigText(orig);
-          addHist(orig, null);
-          setPill('on','● Hört zu …');
-        }
-      } else {
-        // Ohne Übersetzung: bei Satzende in Verlauf – sonst anzeigen
-        const flush = /[.!?,;]$/.test(acc.trim()) || acc.length > 130;
-        if (flush) {
-          zeigText(acc.trim());
-          addHist(acc.trim(), null);
-          acc = '';
-        } else {
-          zeigText(acc);
-        }
-      }
-    }
-
-    // Android: nach jedem Segment neu starten für saubere Erkennung
-    if (isAndroid && finals.length > 0 && listening) {
-      try { rec.stop(); } catch(e) {}
-    }
-  };
-
-  rec.onerror = (ev) => {
-    if (ev.error === 'no-speech') {
-      // Auf Android bei Stille neu starten
-      if (isAndroid && listening) {
-        try { rec.stop(); } catch(e) {}
-      }
-      return;
-    }
-    if (ev.error === 'not-allowed') {
-      cur.innerHTML = '<span style="color:var(--red);font-size:.7em">'
-        + '⚠ Mikrofon verweigert – Einstellungen → Mikrofon → Erlauben</span>';
-      forceStop();
-    }
-  };
-
-  rec.onend = () => {
-    // Automatisch neu starten solange Benutzer aufnehmen möchte
-    if (listening) {
-      // Kurze Pause damit Android sich erholt
-      setTimeout(() => {
-        if (!listening) return;
-        try {
-          rec = new SR();
-          rec.lang           = LANGS[lang].code;
-          rec.interimResults = true;
-          rec.continuous     = !isAndroid;
-          rec.onstart  = arguments.callee; // wird überschrieben – OK
-          attachHandlers(rec);
-          rec.start();
-        } catch(e) {}
-      }, isAndroid ? 400 : 150);
-    }
-  };
-
-  attachHandlers(rec);
-  try { rec.start(); } catch(e) {
-    cur.innerHTML = '<span style="color:var(--red)">Fehler: '+e.message+'</span>';
+  if (isAndroid) {
+    await startAndroid();
+  } else {
+    startWebSpeech();
   }
-}
-
-// Handlers separat damit onend sie wiederverwenden kann
-function attachHandlers(r) {
-  r.onresult = rec.onresult;
-  r.onerror  = rec.onerror;
-  r.onstart  = rec.onstart;
 }
 
 function stopMic() {
   listening = false;
   clearTimeout(hideTimer);
-  if (rec) { rec.onend = null; try { rec.stop(); } catch(e){} rec = null; }
-  micbtn.classList.remove('on');
-  micLbl.textContent = 'EIN';
-  barsEl.classList.remove('on');
-  setPill('','Bereit');
-  stopBars();
-  if (acc.trim()) { addHist(acc.trim(), null); acc = ''; }
-  cur.innerHTML = '<span class="hint">EIN drücken → sprechen</span>';
+  clearInterval(recInterval);
+  if (rec)        { rec.onend=null; try{rec.stop();}catch(e){} rec=null; }
+  if (mediaRec)   { try{mediaRec.stop();}catch(e){} mediaRec=null; }
+  if (audioStream){ audioStream.getTracks().forEach(t=>t.stop()); audioStream=null; }
+  setUI(false);
+  cur.innerHTML='<span class="hint">EIN drücken → sprechen</span>';
 }
 
-function forceStop() {
-  listening = false;
+// ══════════════════════════════════════════════════
+//  ANDROID: MediaRecorder → Claude Whisper
+// ══════════════════════════════════════════════════
+async function startAndroid() {
+  try {
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 16000,
+        channelCount: 1
+      }
+    });
+  } catch(e) {
+    zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Edge → Mikrofon → Erlauben');
+    setUI(false); listening=false; return;
+  }
+
+  listening = true;
+  setPill('on','● Aufnahme läuft');
+  zeigText('Spreche jetzt …', false);
+  startBars();
+  aufnahmeSegment();
+}
+
+function aufnahmeSegment() {
+  if (!listening) return;
+  audioChunks = [];
+
+  const mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg','audio/mp4']
+    .find(m=>MediaRecorder.isTypeSupported(m)) || '';
+
+  try {
+    mediaRec = new MediaRecorder(audioStream, mime?{mimeType:mime}:{});
+  } catch(e) {
+    mediaRec = new MediaRecorder(audioStream);
+  }
+
+  mediaRec.ondataavailable = e => { if(e.data.size>0) audioChunks.push(e.data); };
+
+  mediaRec.onstop = async () => {
+    if (!listening || audioChunks.length===0) return;
+    const blob = new Blob(audioChunks, {type: mediaRec.mimeType||'audio/webm'});
+    if (blob.size < 1000) { // zu kurz – ignorieren
+      if (listening) setTimeout(aufnahmeSegment, 200);
+      return;
+    }
+    await transkribiere(blob);
+    if (listening) setTimeout(aufnahmeSegment, 200);
+  };
+
+  mediaRec.start();
+  // Alle 4 Sekunden ein Segment – gut für Echtzeit-Untertitel
+  setTimeout(()=>{ if(mediaRec&&mediaRec.state==='recording') mediaRec.stop(); }, 4000);
+}
+
+async function transkribiere(blob) {
+  setPill('tr','⟳ Erkenne …');
+
+  // Blob → Base64
+  const b64 = await new Promise((res,rej)=>{
+    const reader = new FileReader();
+    reader.onload  = ()=>res(reader.result.split(',')[1]);
+    reader.onerror = rej;
+    reader.readAsDataURL(blob);
+  });
+
+  const mimeType = blob.type || 'audio/webm';
+  const langName = LANGS[lang]?.name || 'Deutsch';
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        system: `Du bist ein Echtzeit-Transkriptions-Assistent für Untertitel.
+Transkribiere das Audio EXAKT auf ${langName}.
+Antworte NUR mit dem transkribierten Text – kein Kommentar, keine Anführungszeichen.
+Falls kein Gesprochenes zu hören ist, antworte nur mit: [leer]`,
+        messages:[{
+          role:'user',
+          content:[
+            {type:'document', source:{type:'base64', media_type:mimeType, data:b64}},
+            {type:'text', text:`Transkribiere dieses Audio auf ${langName}.`}
+          ]
+        }]
+      })
+    });
+
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error.message);
+
+    const text = (data.content?.[0]?.text||'').trim();
+    if (!text || text==='[leer]' || text.length<2) {
+      setPill('on','● Aufnahme läuft');
+      return;
+    }
+
+    await verarbeiteText(text);
+
+  } catch(e) {
+    // Fallback auf Web Speech wenn API nicht erreichbar
+    setPill('on','● Aufnahme läuft');
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  iOS / Desktop: Web Speech API
+// ══════════════════════════════════════════════════
+function startWebSpeech() {
+  if (!SR) {
+    zeigFehler('⚠ Spracherkennung nicht verfügbar in diesem Browser');
+    setUI(false); listening=false; return;
+  }
+
+  function spawn() {
+    rec = new SR();
+    rec.lang           = LANGS[lang].code;
+    rec.continuous     = true;
+    rec.interimResults = true;
+
+    rec.onstart = () => {
+      listening = true;
+      setPill('on','● Hört zu …');
+      startBars();
+    };
+
+    let lastResultIndex = -1;
+
+    rec.onresult = async (e) => {
+      let interim='';
+      for (let i=e.resultIndex; i<e.results.length; i++) {
+        const seg=e.results[i];
+        const t=seg[0].transcript.trim();
+        if (!t) continue;
+        if (seg.isFinal) {
+          if (i>lastResultIndex) {
+            lastResultIndex=i;
+            await verarbeiteText(t);
+          }
+        } else {
+          interim=t;
+        }
+      }
+      if (interim) {
+        clearTimeout(hideTimer);
+        cur.innerHTML='<span class="interim">'+e2(interim)+'</span>'
+          +'<span class="blink"></span>';
+      }
+    };
+
+    rec.onerror = ev => {
+      if (ev.error==='no-speech') return;
+      if (ev.error==='not-allowed') {
+        zeigFehler('⚠ Mikrofon verweigert – im Browser erlauben');
+        listening=false; setUI(false);
+      }
+    };
+
+    rec.onend = () => {
+      if (listening) setTimeout(spawn, 200);
+    };
+
+    try { rec.start(); } catch(e) {}
+  }
+
+  spawn();
+}
+
+// ══════════════════════════════════════════════════
+//  Text verarbeiten (Duplikatschutz + Übersetzung)
+// ══════════════════════════════════════════════════
+async function verarbeiteText(text) {
+  const clean = text.trim();
+  if (!clean || clean.length<2) return;
+
+  // Duplikat-Schutz
+  const key = clean.toLowerCase().replace(/\s+/g,' ');
+  if (sessionSet.has(key)) return;
+
+  // Teilstring-Duplikat: neuer Text enthält alten oder umgekehrt
+  for (const prev of sessionSet) {
+    if (key.includes(prev) && prev.length > 4) {
+      sessionSet.delete(prev); // ersetze alten durch neuen
+      break;
+    }
+    if (prev.includes(key) && key.length > 4) return; // neuer ist Teilstring
+  }
+
+  sessionSet.add(key);
+
+  if (xlate && lang!=='de') {
+    cur.innerHTML=e2(clean)
+      +'<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
+    setPill('tr','Übersetze …');
+    const result = await translate(clean);
+    if (result) {
+      zeigText(result);
+      addHist(clean, result);
+    } else {
+      zeigText(clean);
+      addHist(clean, null);
+    }
+    setPill('on', isAndroid ? '● Aufnahme läuft' : '● Hört zu …');
+  } else {
+    zeigText(clean);
+    addHist(clean, null);
+  }
+}
+
+// ── Text 7 Sekunden anzeigen dann blinken ──
+function zeigText(text, blink=true) {
   clearTimeout(hideTimer);
-  if (rec) { rec.onend = null; try { rec.abort(); } catch(e){} rec = null; }
-  micbtn.classList.remove('on');
-  micLbl.textContent = 'EIN';
-  barsEl.classList.remove('on');
-  stopBars(); acc = '';
+  cur.innerHTML = e2(text) + (blink ? '<span class="blink"></span>' : '');
+  hideTimer = setTimeout(()=>{
+    if (listening) cur.innerHTML='<span class="blink"></span>';
+  }, 7000);
 }
 
-// ── Text anzeigen mit Haltezeit ──
-function zeigText(text) {
-  clearTimeout(hideTimer);
-  cur.innerHTML = e2(text) + '<span class="blink"></span>';
-  lastShown = text;
-  // Text bleibt 6 Sekunden stehen bevor er verblasst
-  hideTimer = setTimeout(() => {
-    if (!listening) return;
-    cur.innerHTML = '<span class="blink"></span>';
-  }, 6000);
+function zeigFehler(msg) {
+  cur.innerHTML='<span style="color:var(--red);font-size:.75em">'+e2(msg)+'</span>';
 }
 
-// ── Render ──
-function e2(s) {
+// ── UI ──
+function setUI(on) {
+  micbtn.classList.toggle('on', on);
+  micLbl.textContent = on ? 'AUS' : 'EIN';
+  barsEl.classList.toggle('on', on);
+  if (!on) { stopBars(); setPill('','Bereit'); }
+}
+
+function e2(s){
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function showCur(final, interim) {
-  clearTimeout(hideTimer);
-  cur.innerHTML =
-    (final  ? e2(final)+' ' : '') +
-    (interim ? '<span class="interim">'+e2(interim)+'</span>' : '') +
-    (listening ? '<span class="blink"></span>' : '');
-  if (!final && !interim)
-    cur.innerHTML = listening
-      ? '<span class="blink"></span>'
-      : '<span class="hint">EIN drücken → sprechen</span>';
-}
-
 function addHist(orig, transl) {
-  const d = document.createElement('div');
-  d.className = 'hline';
+  const d=document.createElement('div');
+  d.className='hline';
   if (transl) {
-    d.innerHTML = e2(transl)
-      + '<span class="orig">'+(LANGS[lang]?.flag||'')+' '+e2(orig)+'</span>';
+    d.innerHTML=e2(transl)+'<span class="orig">'+(LANGS[lang]?.flag||'')+' '+e2(orig)+'</span>';
   } else {
-    d.textContent = orig;
+    d.textContent=orig;
   }
   hist.appendChild(d);
-  hist.scrollTo({top:hist.scrollHeight, behavior:'smooth'});
+  hist.scrollTo({top:hist.scrollHeight,behavior:'smooth'});
 }
 
 function clearAll() {
-  hist.innerHTML = '';
-  acc = '';
-  sessionResults.clear();
-  lastShown = '';
+  hist.innerHTML='';
+  sessionSet.clear();
   clearTimeout(hideTimer);
-  cur.innerHTML = listening
-    ? '<span class="blink"></span>'
-    : '<span class="hint">EIN drücken → sprechen</span>';
+  cur.innerHTML=listening
+    ?'<span class="blink"></span>'
+    :'<span class="hint">EIN drücken → sprechen</span>';
 }
 
-function setPill(cls, txt) {
-  pill.className = 'pill'+(cls?' '+cls:'');
-  pillTxt.textContent = txt;
+function setPill(cls,txt){
+  pill.className='pill'+(cls?' '+cls:'');
+  pillTxt.textContent=txt;
 }
 
-// ── Pegelbalken ──
-function startBars() {
-  let t = 0;
-  (function f() {
-    t += .1;
-    bars.forEach((b,i) => {
-      b.style.height = (BAR_H[i]+Math.abs(Math.sin(t+i*.8))*(24-BAR_H[i])).toFixed(0)+'px';
+function startBars(){
+  let t=0;
+  (function f(){
+    t+=.1;
+    bars.forEach((b,i)=>{
+      b.style.height=(BAR_H[i]+Math.abs(Math.sin(t+i*.8))*(24-BAR_H[i])).toFixed(0)+'px';
     });
-    barAnim = requestAnimationFrame(f);
+    barAnim=requestAnimationFrame(f);
   })();
 }
-function stopBars() {
+function stopBars(){
   cancelAnimationFrame(barAnim);
-  bars.forEach((b,i) => b.style.height = BAR_H[i]+'px');
+  bars.forEach((b,i)=>b.style.height=BAR_H[i]+'px');
 }
 
-// ── Wake Lock ──
-async function wakeLock() {
-  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch(e){}
+async function wakeLock(){
+  try{if('wakeLock' in navigator) await navigator.wakeLock.request('screen');}catch(e){}
 }
 wakeLock();
-document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeLock(); });
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)wakeLock();});
 </script>
 </body>
 </html>
