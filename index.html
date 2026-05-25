@@ -276,10 +276,12 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 
 <script>
 // ═══════════════════════════════════════════════════
-//  HörBrücke – Web Speech API
-//  Alle Geräte: Chrome (Android/Desktop), Safari (iOS)
-//  STT:         Web Speech API – kostenlos, kein Key
-//  Übersetzung: MyMemory + Google Translate – kostenlos
+//  HörBrücke
+//  iOS/Desktop : Web Speech API, continuous=true
+//  Android     : Web Speech API, continuous=false
+//                + manueller Neustart nach jedem Satz
+//                (Chrome Android unterstützt continuous nicht stabil)
+//  Übersetzung : MyMemory + Google Translate (kostenlos, kein Key)
 // ═══════════════════════════════════════════════════
 
 const LANGS = {
@@ -288,24 +290,24 @@ const LANGS = {
   es: { code:'es-ES', flag:'🇪🇸', name:'Español' },
 };
 
-// Geräteerkennung – nur für Fehlermeldungen und Optimierungen
 const isAndroid = /android/i.test(navigator.userAgent);
 const isIOS     = /iPad|iPhone|iPod/.test(navigator.userAgent)
                   || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-const isChrome  = /Chrome\//.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent);
-const isSamsung = /SamsungBrowser/.test(navigator.userAgent);
+const isSamsung = /SamsungBrowser/i.test(navigator.userAgent);
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 let lang       = 'de';
 let xlate      = false;
+// ── listening ist die EINZIGE Quelle der Wahrheit ──
+// true  = Nutzer will aufnehmen
+// false = Nutzer hat gestoppt (oder Fehler)
 let listening  = false;
 let hideTimer  = null;
 let sessionSet = new Set();
-let spawnTimer = null;   // für Android-Restart-Debounce
-let errorCount = 0;      // Fehler-Zähler für Neustart-Logik
+let restartTimer = null;   // Android-Neustart-Debounce
 
-// Web Speech
-let rec = null;
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;  // aktive SpeechRecognition-Instanz
 
 // DOM
 const pill    = document.getElementById('pill');
@@ -321,36 +323,25 @@ const bars    = [0,1,2,3,4].map(i=>document.getElementById('b'+i));
 let barAnim   = null;
 const BAR_H   = [6,12,20,12,6];
 
-// ══════════════════════════════════════════════════
-//  Browser-Kompatibilitäts-Check beim Start
-// ══════════════════════════════════════════════════
-window.addEventListener('DOMContentLoaded', () => {
-  if (!SR) {
-    // Samsung Browser hat kein Web Speech – Hinweis zeigen
-    if (isSamsung) {
-      netWarn.innerHTML = '⚠ Samsung Browser unterstützt keine Spracherkennung. '
-        + '<strong>Bitte Chrome installieren:</strong> '
-        + '<a href="https://play.google.com/store/apps/details?id=com.android.chrome" '
-        + 'style="color:#ffe000">Chrome herunterladen →</a>';
-    } else {
-      netWarn.innerHTML = '⚠ Dein Browser unterstützt keine Spracherkennung. '
-        + 'Bitte <strong>Chrome</strong> oder <strong>Safari</strong> verwenden.';
-    }
-    netWarn.classList.add('show');
-  }
-});
+// Samsung-Browser-Warnung beim Start
+if (isSamsung || !SR) {
+  netWarn.innerHTML = '⚠ Spracherkennung nicht verfügbar. '
+    + 'Bitte <strong>Chrome</strong> installieren: '
+    + '<a href="https://play.google.com/store/apps/details?id=com.android.chrome" '
+    + 'style="color:#ffe000">Chrome herunterladen →</a>';
+  netWarn.classList.add('show');
+}
 
 // ── Sprachauswahl ──
 function setLang(l) {
   lang = l;
-  ['de','en','es'].forEach(x=>
-    document.getElementById('lb-'+x).classList.toggle('on',x===l));
-  if (listening) { stopMic(); setTimeout(startMic, 400); }
+  ['de','en','es'].forEach(x =>
+    document.getElementById('lb-'+x).classList.toggle('on', x===l));
+  if (listening) { stopMic(); setTimeout(startMic, 300); }
 }
 
 // ══════════════════════════════════════════════════
 //  ÜBERSETZUNG – MyMemory + Google Translate Fallback
-//  Beide kostenlos, kein API-Key nötig
 // ══════════════════════════════════════════════════
 async function toggleTranslate() {
   if (!xlate) {
@@ -359,7 +350,7 @@ async function toggleTranslate() {
     try {
       ok = await Promise.race([
         fetch('https://api.mymemory.translated.net/get?q=hello&langpair=en|de',
-          {mode:'cors', cache:'no-store'})
+          {mode:'cors',cache:'no-store'})
           .then(r=>r.json()).then(d=>d.responseStatus===200),
         new Promise((_,r)=>setTimeout(()=>r(false),5000))
       ]);
@@ -381,109 +372,116 @@ async function toggleTranslate() {
     netWarn.classList.remove('show');
   }
 }
-
 function forceTranslate() {
   xlate=true; tbtn.textContent='✓ Übersetzen AN'; tbtn.classList.add('on');
   netWarn.classList.remove('show');
 }
-
 async function translate(text) {
   const from=lang, enc=encodeURIComponent(text);
-
-  // 1. MyMemory – 5000 Zeichen/Tag kostenlos, kein Key
   try {
-    const r=await fetch(
-      'https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',
-      {mode:'cors'});
+    const r=await fetch('https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',{mode:'cors'});
     const d=await r.json();
     if (d.responseStatus===200) {
       const t=(d.responseData?.translatedText||'').trim();
-      if (t && !t.startsWith('QUERY') && t.toUpperCase()!==text.toUpperCase()) return t;
+      if (t&&!t.startsWith('QUERY')&&t.toUpperCase()!==text.toUpperCase()) return t;
     }
   } catch(e){}
-
-  // 2. Google Translate (inoffiziell, kostenlos) – Fallback
   try {
-    const r=await fetch(
-      'https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
+    const r=await fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
     const d=await r.json();
     if (Array.isArray(d)&&d[0]) {
       const t=d[0].map(c=>c[0]||'').join('').trim();
       if (t) return t;
     }
   } catch(e){}
-
   return null;
 }
 
 // ══════════════════════════════════════════════════
-//  MIKROFON
+//  MIKROFON – Ein/Aus
 // ══════════════════════════════════════════════════
 function toggleMic() {
-  listening ? stopMic() : startMic();
+  if (listening) {
+    stopMic();
+  } else {
+    startMic();
+  }
 }
 
 function startMic() {
   if (!SR) {
-    // Noch kein SR – passende Fehlermeldung
-    if (isSamsung) {
-      zeigFehler('⚠ Bitte Chrome öffnen – Samsung Browser unterstützt keine Spracherkennung');
-    } else {
-      zeigFehler('⚠ Spracherkennung nicht verfügbar – bitte Chrome oder Safari verwenden');
-    }
-    setUI(false); return;
+    zeigFehler('⚠ Spracherkennung nicht verfügbar – bitte Chrome verwenden');
+    return;
   }
   sessionSet.clear();
-  errorCount = 0;
+  listening = true;   // SOFORT setzen, bevor spawn() aufgerufen wird
   setUI(true);
   spawnRec();
 }
 
 function stopMic() {
-  listening = false;
+  listening = false;  // SOFORT – verhindert jeden Neustart in onend
   clearTimeout(hideTimer);
-  clearTimeout(spawnTimer);
-  if (rec) { rec.onend=null; rec.onerror=null; try{rec.stop();}catch(e){} rec=null; }
+  clearTimeout(restartTimer);
+  killeRec();
   setUI(false);
-  cur.innerHTML='<span class="hint">EIN drücken → sprechen</span>';
+  cur.innerHTML = '<span class="hint">EIN drücken → sprechen</span>';
+}
+
+// Sauber die aktuelle Instanz beenden ohne Neustart auszulösen
+function killeRec() {
+  if (!rec) return;
+  const r = rec;
+  rec = null;
+  r.onstart  = null;
+  r.onresult = null;
+  r.onerror  = null;
+  r.onend    = null;
+  try { r.abort(); } catch(e) {}
 }
 
 // ══════════════════════════════════════════════════
-//  Web Speech API – robuster Spawn mit Auto-Restart
-//  Optimiert für Android Chrome (bricht öfter ab)
+//  Web Speech API – unterschiedlich je Plattform:
+//
+//  iOS / Desktop  → continuous=true  (stabil, ein langer Stream)
+//  Android Chrome → continuous=false (stabiler als true auf Android!)
+//                   nach jedem onend wird neu gestartet
 // ══════════════════════════════════════════════════
 function spawnRec() {
-  if (!listening) return;
+  if (!listening) return;   // Stopp-Guard – verhindert Neustart nach stopMic()
 
-  // Alte Instanz sauber wegräumen
-  if (rec) { rec.onend=null; rec.onerror=null; try{rec.abort();}catch(e){} rec=null; }
+  killeRec();  // vorherige Instanz wegräumen
 
-  rec = new SR();
-  rec.lang           = LANGS[lang].code;
-  rec.continuous     = true;
-  rec.interimResults = true;
-  // maxAlternatives=1 ist Standard, explizit für Android
-  rec.maxAlternatives = 1;
+  const r = new SR();
+  rec = r;
 
-  let lastResultIndex = -1;
-  let gotResult       = false;
+  r.lang           = LANGS[lang].code;
+  r.interimResults = true;
+  r.maxAlternatives = 1;
 
-  rec.onstart = () => {
-    errorCount = 0;
-    setPill('on','● Hört zu …');
+  // ── PLATTFORM-UNTERSCHIED ──
+  // Android Chrome: continuous=false → stabiler, liefert zuverlässig Ergebnisse
+  // iOS/Desktop:    continuous=true  → ein langer Stream, weniger Unterbrechungen
+  r.continuous = !isAndroid;
+
+  let lastFinalIdx = -1;
+
+  r.onstart = () => {
+    if (!listening) { killeRec(); return; }  // race condition guard
+    setPill('on', '● Hört zu …');
     startBars();
   };
 
-  rec.onresult = async (e) => {
-    gotResult = true;
+  r.onresult = async (e) => {
+    if (!listening) return;
     let interim = '';
-    for (let i=e.resultIndex; i<e.results.length; i++) {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
       const seg = e.results[i];
       const t   = seg[0].transcript.trim();
       if (!t) continue;
       if (seg.isFinal) {
-        if (i > lastResultIndex) {
-          lastResultIndex = i;
+        if (i > lastFinalIdx) {
+          lastFinalIdx = i;
           await verarbeiteText(t);
         }
       } else {
@@ -497,51 +495,38 @@ function spawnRec() {
     }
   };
 
-  rec.onerror = ev => {
-    // 'no-speech' ist normal – einfach neu starten
+  r.onerror = (ev) => {
+    if (!listening) return;
     if (ev.error === 'no-speech') {
-      // Android: sofort neu starten ohne Verzögerung
+      // normal bei Pausen – Android: sofort neu starten
       return;
     }
     if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
-      let msg = '⚠ Mikrofon verweigert – ';
-      if (isAndroid) {
-        msg += 'Einstellungen → Apps → Chrome → Berechtigungen → Mikrofon → Erlauben';
-      } else {
-        msg += 'im Browser-Einstellungen Mikrofon erlauben';
-      }
-      zeigFehler(msg);
+      zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Chrome → Berechtigungen → Mikrofon');
       listening = false; setUI(false); return;
     }
     if (ev.error === 'network') {
-      // Android Chrome braucht Internet für Web Speech
-      zeigFehler('⚠ Netzwerkfehler – WLAN oder Mobilnetz prüfen');
-      errorCount++;
+      zeigFehler('⚠ Netzwerkfehler – WLAN/Mobilnetz prüfen (Web Speech braucht Internet)');
+      listening = false; setUI(false); return;
     }
-    // Bei wiederkehrenden Fehlern: kurze Pause dann Neustart
-    errorCount++;
-    if (errorCount > 5) {
-      zeigFehler('⚠ Spracherkennung instabil – bitte neu starten');
-      listening = false; setUI(false);
-    }
+    // Andere Fehler: kurz warten, dann neu starten
   };
 
-  rec.onend = () => {
+  r.onend = () => {
+    // Wenn listening=false → Nutzer hat gestoppt → KEIN Neustart
     if (!listening) return;
-    // Android bricht regelmäßig ab – sofort neu spawnen
-    // Kleine Verzögerung verhindert zu schnelles Recycling
-    const delay = isAndroid ? 100 : 200;
-    clearTimeout(spawnTimer);
-    spawnTimer = setTimeout(spawnRec, delay);
+
+    // Neustart mit minimalem Delay (Android braucht kurze Pause zwischen Instanzen)
+    clearTimeout(restartTimer);
+    restartTimer = setTimeout(spawnRec, isAndroid ? 150 : 100);
   };
 
   try {
-    rec.start();
-    listening = true;
+    r.start();
   } catch(e) {
-    // InvalidStateError: bereits gestartet – kurz warten
-    clearTimeout(spawnTimer);
-    spawnTimer = setTimeout(spawnRec, 300);
+    // InvalidStateError: Browser noch beschäftigt → etwas länger warten
+    clearTimeout(restartTimer);
+    restartTimer = setTimeout(spawnRec, 400);
   }
 }
 
@@ -552,17 +537,12 @@ async function verarbeiteText(text) {
   const clean = text.trim();
   if (!clean || clean.length < 2) return;
 
-  // Duplikat-Schutz
   const key = clean.toLowerCase().replace(/\s+/g,' ');
   if (sessionSet.has(key)) return;
 
-  // Teilstring-Duplikat: neuer Text enthält alten oder umgekehrt
   for (const prev of sessionSet) {
-    if (key.includes(prev) && prev.length > 4) {
-      sessionSet.delete(prev);
-      break;
-    }
-    if (prev.includes(key) && key.length > 4) return;
+    if (key.includes(prev) && prev.length > 4) { sessionSet.delete(prev); break; }
+    if (prev.includes(key) && key.length > 4)  return;
   }
   sessionSet.add(key);
 
@@ -571,34 +551,26 @@ async function verarbeiteText(text) {
       + '<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
     setPill('tr','Übersetze …');
     const result = await translate(clean);
-    if (result) {
-      zeigText(result);
-      addHist(clean, result);
-    } else {
-      zeigText(clean);
-      addHist(clean, null);
-    }
-    setPill('on','● Hört zu …');
+    zeigText(result || clean);
+    addHist(clean, result || null);
+    if (listening) setPill('on','● Hört zu …');
   } else {
     zeigText(clean);
     addHist(clean, null);
   }
 }
 
-// ── Text 7 Sekunden anzeigen dann blinken ──
+// ── Hilfsfunktionen ──
 function zeigText(text, blink=true) {
   clearTimeout(hideTimer);
   cur.innerHTML = e2(text) + (blink ? '<span class="blink"></span>' : '');
   hideTimer = setTimeout(()=>{
-    if (listening) cur.innerHTML='<span class="blink"></span>';
+    if (listening) cur.innerHTML = '<span class="blink"></span>';
   }, 7000);
 }
-
 function zeigFehler(msg) {
-  cur.innerHTML='<span style="color:var(--red);font-size:.75em">'+e2(msg)+'</span>';
+  cur.innerHTML = '<span style="color:var(--red);font-size:.75em">'+e2(msg)+'</span>';
 }
-
-// ── UI ──
 function setUI(on) {
   micbtn.classList.toggle('on', on);
   micLbl.textContent = on ? 'AUS' : 'EIN';
@@ -607,11 +579,9 @@ function setUI(on) {
   const fmb = document.getElementById('fs-mic');
   if (fmb) fmb.classList.toggle('on', on);
 }
-
 function e2(s) {
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-
 function addHist(orig, transl) {
   const d = document.createElement('div');
   d.className = 'hline';
@@ -623,7 +593,6 @@ function addHist(orig, transl) {
   hist.appendChild(d);
   hist.scrollTo({top:hist.scrollHeight, behavior:'smooth'});
 }
-
 function clearAll() {
   hist.innerHTML = '';
   sessionSet.clear();
@@ -632,12 +601,10 @@ function clearAll() {
     ? '<span class="blink"></span>'
     : '<span class="hint">EIN drücken → sprechen</span>';
 }
-
 function setPill(cls, txt) {
   pill.className = 'pill'+(cls?' '+cls:'');
   pillTxt.textContent = txt;
 }
-
 function startBars() {
   let t=0;
   (function f(){
@@ -655,8 +622,6 @@ function stopBars() {
 
 // ── Vollbild ──
 let isFS = false;
-const fsMicBtn = document.getElementById('fs-mic');
-
 function toggleFullscreen() {
   isFS = !isFS;
   document.body.classList.toggle('fullscreen-mode', isFS);
@@ -673,7 +638,6 @@ function toggleFullscreen() {
     else if (document.mozCancelFullScreen)  document.mozCancelFullScreen();
   }
 }
-
 document.addEventListener('fullscreenchange', () => {
   if (!document.fullscreenElement && isFS) {
     isFS = false;
@@ -683,7 +647,7 @@ document.addEventListener('fullscreenchange', () => {
   }
 });
 
-// ── Wake Lock (Bildschirm nicht sperren) ──
+// ── Wake Lock ──
 async function wakeLock() {
   try { if('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch(e) {}
 }
