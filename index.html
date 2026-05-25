@@ -73,7 +73,7 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 .sep{border:none;border-top:1px solid var(--border);flex-shrink:0}
 
 /* ── AKTUELL ── */
-.cur-wrap{flex-shrink:0;padding:10px 14px 6px;background:#000000;margin-bottom:18px}
+.cur-wrap{flex-shrink:0;padding:10px 14px 6px;background:#000000;margin-bottom:48px}
 .cur-lbl{font-size:.58rem;letter-spacing:.14em;text-transform:uppercase;
   color:rgba(0,255,80,.45);margin-bottom:5px}
 #cur{font-size:clamp(1.5rem,6vw,2.4rem);font-weight:700;line-height:1.2;
@@ -136,11 +136,11 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
   justify-content: flex-end;
 }
 .fullscreen-mode .cur-wrap {
-  padding: 0 20px 40px;
+  padding: 0 20px 0;
   flex: 1;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: center;
 }
 .fullscreen-mode #cur {
   font-size: clamp(1.8rem, 7vw, 3.2rem);
@@ -433,9 +433,14 @@ function spawnRec() {
   const r = new SR();
   rec = r;
   r.lang            = LANGS[lang].code;
-  r.interimResults  = true;
   r.maxAlternatives = 1;
-  r.continuous      = !isAndroid;  // false auf Android, true auf iOS/Desktop
+
+  // Android Chrome: interimResults=false + continuous=false
+  //   → Chrome liefert zuverlässig isFinal-Ergebnisse
+  // iOS/Desktop:    interimResults=true  + continuous=true
+  //   → flüssiger Stream mit Zwischenergebnissen
+  r.interimResults = !isAndroid;
+  r.continuous     = !isAndroid;
 
   let lastFinalIdx = -1;
 
@@ -466,7 +471,7 @@ function spawnRec() {
 
   r.onerror = (ev) => {
     if (!listening) return;
-    if (ev.error === 'no-speech') return;  // normal bei Pausen
+    if (ev.error === 'no-speech') return;
     if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
       zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Chrome → Berechtigungen → Mikrofon');
       listening = false; setUI(false); return;
@@ -478,7 +483,7 @@ function spawnRec() {
   };
 
   r.onend = () => {
-    if (!listening) return;  // Nutzer hat gestoppt → kein Neustart
+    if (!listening) return;
     clearTimeout(restartTimer);
     restartTimer = setTimeout(spawnRec, isAndroid ? 150 : 100);
   };
@@ -496,21 +501,19 @@ function spawnRec() {
 // ══════════════════════════════════════════════════
 async function verarbeiteText(text) {
   const clean = text.trim();
-  if (!clean || clean.length<2) return;
+  if (!clean || clean.length < 2) return;
 
-  // Duplikat-Schutz
   const key = clean.toLowerCase().replace(/\s+/g,' ');
   if (sessionSet.has(key)) return;
 
-  // Teilstring-Duplikat: neuer Text enthält alten oder umgekehrt
-  for (const prev of sessionSet) {
-    if (key.includes(prev) && prev.length > 4) {
-      sessionSet.delete(prev); // ersetze alten durch neuen
-      break;
+  // Teilstring-Duplikat nur bei längeren Texten prüfen (>8 Zeichen)
+  // – auf Android kommen kurze Sätze legitim mehrfach
+  if (key.length > 8) {
+    for (const prev of sessionSet) {
+      if (key.includes(prev) && prev.length > 6) { sessionSet.delete(prev); break; }
+      if (prev.includes(key) && key.length > 6) return;
     }
-    if (prev.includes(key) && key.length > 4) return; // neuer ist Teilstring
   }
-
   sessionSet.add(key);
 
   if (xlate && lang!=='de') {
