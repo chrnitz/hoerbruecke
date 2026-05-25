@@ -277,7 +277,9 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 <script>
 // ═══════════════════════════════════════════════════
 //  HörBrücke – Web Speech API
-//  Alle Geräte: Web Speech API (Chrome, Safari, Edge)
+//  Alle Geräte: Chrome (Android/Desktop), Safari (iOS)
+//  STT:         Web Speech API – kostenlos, kein Key
+//  Übersetzung: MyMemory + Google Translate – kostenlos
 // ═══════════════════════════════════════════════════
 
 const LANGS = {
@@ -286,20 +288,26 @@ const LANGS = {
   es: { code:'es-ES', flag:'🇪🇸', name:'Español' },
 };
 
+// Geräteerkennung – nur für Fehlermeldungen und Optimierungen
+const isAndroid = /android/i.test(navigator.userAgent);
 const isIOS     = /iPad|iPhone|iPod/.test(navigator.userAgent)
                   || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const isChrome  = /Chrome\//.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent);
+const isSamsung = /SamsungBrowser/.test(navigator.userAgent);
 
-let lang      = 'de';
-let xlate     = false;
-let listening = false;
-let hideTimer = null;
-let sessionSet= new Set();
+let lang       = 'de';
+let xlate      = false;
+let listening  = false;
+let hideTimer  = null;
+let sessionSet = new Set();
+let spawnTimer = null;   // für Android-Restart-Debounce
+let errorCount = 0;      // Fehler-Zähler für Neustart-Logik
 
-// Web Speech state
+// Web Speech
 let rec = null;
-
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+// DOM
 const pill    = document.getElementById('pill');
 const pillTxt = document.getElementById('pill-txt');
 const cur     = document.getElementById('cur');
@@ -313,15 +321,37 @@ const bars    = [0,1,2,3,4].map(i=>document.getElementById('b'+i));
 let barAnim   = null;
 const BAR_H   = [6,12,20,12,6];
 
+// ══════════════════════════════════════════════════
+//  Browser-Kompatibilitäts-Check beim Start
+// ══════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', () => {
+  if (!SR) {
+    // Samsung Browser hat kein Web Speech – Hinweis zeigen
+    if (isSamsung) {
+      netWarn.innerHTML = '⚠ Samsung Browser unterstützt keine Spracherkennung. '
+        + '<strong>Bitte Chrome installieren:</strong> '
+        + '<a href="https://play.google.com/store/apps/details?id=com.android.chrome" '
+        + 'style="color:#ffe000">Chrome herunterladen →</a>';
+    } else {
+      netWarn.innerHTML = '⚠ Dein Browser unterstützt keine Spracherkennung. '
+        + 'Bitte <strong>Chrome</strong> oder <strong>Safari</strong> verwenden.';
+    }
+    netWarn.classList.add('show');
+  }
+});
+
 // ── Sprachauswahl ──
 function setLang(l) {
   lang = l;
   ['de','en','es'].forEach(x=>
     document.getElementById('lb-'+x).classList.toggle('on',x===l));
-  if (listening) { stopMic(); setTimeout(startMic,400); }
+  if (listening) { stopMic(); setTimeout(startMic, 400); }
 }
 
-// ── Übersetzen ──
+// ══════════════════════════════════════════════════
+//  ÜBERSETZUNG – MyMemory + Google Translate Fallback
+//  Beide kostenlos, kein API-Key nötig
+// ══════════════════════════════════════════════════
 async function toggleTranslate() {
   if (!xlate) {
     tbtn.textContent='⟳ Prüfe …'; tbtn.disabled=true;
@@ -329,7 +359,8 @@ async function toggleTranslate() {
     try {
       ok = await Promise.race([
         fetch('https://api.mymemory.translated.net/get?q=hello&langpair=en|de',
-          {mode:'cors',cache:'no-store'}).then(r=>r.json()).then(d=>d.responseStatus===200),
+          {mode:'cors', cache:'no-store'})
+          .then(r=>r.json()).then(d=>d.responseStatus===200),
         new Promise((_,r)=>setTimeout(()=>r(false),5000))
       ]);
     } catch(e){}
@@ -350,112 +381,168 @@ async function toggleTranslate() {
     netWarn.classList.remove('show');
   }
 }
-function forceTranslate(){
+
+function forceTranslate() {
   xlate=true; tbtn.textContent='✓ Übersetzen AN'; tbtn.classList.add('on');
   netWarn.classList.remove('show');
 }
+
 async function translate(text) {
   const from=lang, enc=encodeURIComponent(text);
+
+  // 1. MyMemory – 5000 Zeichen/Tag kostenlos, kein Key
   try {
-    const r=await fetch('https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',{mode:'cors'});
+    const r=await fetch(
+      'https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',
+      {mode:'cors'});
     const d=await r.json();
-    if(d.responseStatus===200){
+    if (d.responseStatus===200) {
       const t=(d.responseData?.translatedText||'').trim();
-      if(t&&!t.startsWith('QUERY')&&t.toUpperCase()!==text.toUpperCase()) return t;
+      if (t && !t.startsWith('QUERY') && t.toUpperCase()!==text.toUpperCase()) return t;
     }
   } catch(e){}
+
+  // 2. Google Translate (inoffiziell, kostenlos) – Fallback
   try {
-    const r=await fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
+    const r=await fetch(
+      'https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
     const d=await r.json();
-    if(Array.isArray(d)&&d[0]){const t=d[0].map(c=>c[0]||'').join('').trim();if(t)return t;}
+    if (Array.isArray(d)&&d[0]) {
+      const t=d[0].map(c=>c[0]||'').join('').trim();
+      if (t) return t;
+    }
   } catch(e){}
+
   return null;
 }
 
 // ══════════════════════════════════════════════════
-//  MIKROFON – wählt Methode je nach Gerät
+//  MIKROFON
 // ══════════════════════════════════════════════════
 function toggleMic() {
   listening ? stopMic() : startMic();
 }
 
-async function startMic() {
+function startMic() {
+  if (!SR) {
+    // Noch kein SR – passende Fehlermeldung
+    if (isSamsung) {
+      zeigFehler('⚠ Bitte Chrome öffnen – Samsung Browser unterstützt keine Spracherkennung');
+    } else {
+      zeigFehler('⚠ Spracherkennung nicht verfügbar – bitte Chrome oder Safari verwenden');
+    }
+    setUI(false); return;
+  }
   sessionSet.clear();
+  errorCount = 0;
   setUI(true);
-  startWebSpeech();
+  spawnRec();
 }
 
 function stopMic() {
   listening = false;
   clearTimeout(hideTimer);
-  if (rec) { rec.onend=null; try{rec.stop();}catch(e){} rec=null; }
+  clearTimeout(spawnTimer);
+  if (rec) { rec.onend=null; rec.onerror=null; try{rec.stop();}catch(e){} rec=null; }
   setUI(false);
   cur.innerHTML='<span class="hint">EIN drücken → sprechen</span>';
 }
 
-
-
 // ══════════════════════════════════════════════════
-//  iOS / Desktop: Web Speech API
+//  Web Speech API – robuster Spawn mit Auto-Restart
+//  Optimiert für Android Chrome (bricht öfter ab)
 // ══════════════════════════════════════════════════
-function startWebSpeech() {
-  if (!SR) {
-    zeigFehler('⚠ Spracherkennung nicht verfügbar in diesem Browser');
-    setUI(false); listening=false; return;
-  }
+function spawnRec() {
+  if (!listening) return;
 
-  function spawn() {
-    rec = new SR();
-    rec.lang           = LANGS[lang].code;
-    rec.continuous     = true;
-    rec.interimResults = true;
+  // Alte Instanz sauber wegräumen
+  if (rec) { rec.onend=null; rec.onerror=null; try{rec.abort();}catch(e){} rec=null; }
 
-    rec.onstart = () => {
-      listening = true;
-      setPill('on','● Hört zu …');
-      startBars();
-    };
+  rec = new SR();
+  rec.lang           = LANGS[lang].code;
+  rec.continuous     = true;
+  rec.interimResults = true;
+  // maxAlternatives=1 ist Standard, explizit für Android
+  rec.maxAlternatives = 1;
 
-    let lastResultIndex = -1;
+  let lastResultIndex = -1;
+  let gotResult       = false;
 
-    rec.onresult = async (e) => {
-      let interim='';
-      for (let i=e.resultIndex; i<e.results.length; i++) {
-        const seg=e.results[i];
-        const t=seg[0].transcript.trim();
-        if (!t) continue;
-        if (seg.isFinal) {
-          if (i>lastResultIndex) {
-            lastResultIndex=i;
-            await verarbeiteText(t);
-          }
-        } else {
-          interim=t;
+  rec.onstart = () => {
+    errorCount = 0;
+    setPill('on','● Hört zu …');
+    startBars();
+  };
+
+  rec.onresult = async (e) => {
+    gotResult = true;
+    let interim = '';
+    for (let i=e.resultIndex; i<e.results.length; i++) {
+      const seg = e.results[i];
+      const t   = seg[0].transcript.trim();
+      if (!t) continue;
+      if (seg.isFinal) {
+        if (i > lastResultIndex) {
+          lastResultIndex = i;
+          await verarbeiteText(t);
         }
+      } else {
+        interim = t;
       }
-      if (interim) {
-        clearTimeout(hideTimer);
-        cur.innerHTML='<span class="interim">'+e2(interim)+'</span>'
-          +'<span class="blink"></span>';
+    }
+    if (interim) {
+      clearTimeout(hideTimer);
+      cur.innerHTML = '<span class="interim">'+e2(interim)+'</span>'
+        + '<span class="blink"></span>';
+    }
+  };
+
+  rec.onerror = ev => {
+    // 'no-speech' ist normal – einfach neu starten
+    if (ev.error === 'no-speech') {
+      // Android: sofort neu starten ohne Verzögerung
+      return;
+    }
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+      let msg = '⚠ Mikrofon verweigert – ';
+      if (isAndroid) {
+        msg += 'Einstellungen → Apps → Chrome → Berechtigungen → Mikrofon → Erlauben';
+      } else {
+        msg += 'im Browser-Einstellungen Mikrofon erlauben';
       }
-    };
+      zeigFehler(msg);
+      listening = false; setUI(false); return;
+    }
+    if (ev.error === 'network') {
+      // Android Chrome braucht Internet für Web Speech
+      zeigFehler('⚠ Netzwerkfehler – WLAN oder Mobilnetz prüfen');
+      errorCount++;
+    }
+    // Bei wiederkehrenden Fehlern: kurze Pause dann Neustart
+    errorCount++;
+    if (errorCount > 5) {
+      zeigFehler('⚠ Spracherkennung instabil – bitte neu starten');
+      listening = false; setUI(false);
+    }
+  };
 
-    rec.onerror = ev => {
-      if (ev.error==='no-speech') return;
-      if (ev.error==='not-allowed') {
-        zeigFehler('⚠ Mikrofon verweigert – im Browser erlauben');
-        listening=false; setUI(false);
-      }
-    };
+  rec.onend = () => {
+    if (!listening) return;
+    // Android bricht regelmäßig ab – sofort neu spawnen
+    // Kleine Verzögerung verhindert zu schnelles Recycling
+    const delay = isAndroid ? 100 : 200;
+    clearTimeout(spawnTimer);
+    spawnTimer = setTimeout(spawnRec, delay);
+  };
 
-    rec.onend = () => {
-      if (listening) setTimeout(spawn, 200);
-    };
-
-    try { rec.start(); } catch(e) {}
+  try {
+    rec.start();
+    listening = true;
+  } catch(e) {
+    // InvalidStateError: bereits gestartet – kurz warten
+    clearTimeout(spawnTimer);
+    spawnTimer = setTimeout(spawnRec, 300);
   }
-
-  spawn();
 }
 
 // ══════════════════════════════════════════════════
@@ -463,7 +550,7 @@ function startWebSpeech() {
 // ══════════════════════════════════════════════════
 async function verarbeiteText(text) {
   const clean = text.trim();
-  if (!clean || clean.length<2) return;
+  if (!clean || clean.length < 2) return;
 
   // Duplikat-Schutz
   const key = clean.toLowerCase().replace(/\s+/g,' ');
@@ -472,17 +559,16 @@ async function verarbeiteText(text) {
   // Teilstring-Duplikat: neuer Text enthält alten oder umgekehrt
   for (const prev of sessionSet) {
     if (key.includes(prev) && prev.length > 4) {
-      sessionSet.delete(prev); // ersetze alten durch neuen
+      sessionSet.delete(prev);
       break;
     }
-    if (prev.includes(key) && key.length > 4) return; // neuer ist Teilstring
+    if (prev.includes(key) && key.length > 4) return;
   }
-
   sessionSet.add(key);
 
-  if (xlate && lang!=='de') {
-    cur.innerHTML=e2(clean)
-      +'<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
+  if (xlate && lang !== 'de') {
+    cur.innerHTML = e2(clean)
+      + '<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
     setPill('tr','Übersetze …');
     const result = await translate(clean);
     if (result) {
@@ -492,7 +578,7 @@ async function verarbeiteText(text) {
       zeigText(clean);
       addHist(clean, null);
     }
-    setPill('on', '● Hört zu …');
+    setPill('on','● Hört zu …');
   } else {
     zeigText(clean);
     addHist(clean, null);
@@ -518,42 +604,41 @@ function setUI(on) {
   micLbl.textContent = on ? 'AUS' : 'EIN';
   barsEl.classList.toggle('on', on);
   if (!on) { stopBars(); setPill('','Bereit'); }
-  // Vollbild-Mic-Button synchron halten
   const fmb = document.getElementById('fs-mic');
   if (fmb) fmb.classList.toggle('on', on);
 }
 
-function e2(s){
+function e2(s) {
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function addHist(orig, transl) {
-  const d=document.createElement('div');
-  d.className='hline';
+  const d = document.createElement('div');
+  d.className = 'hline';
   if (transl) {
-    d.innerHTML=e2(transl)+'<span class="orig">'+(LANGS[lang]?.flag||'')+' '+e2(orig)+'</span>';
+    d.innerHTML = e2(transl)+'<span class="orig">'+(LANGS[lang]?.flag||'')+' '+e2(orig)+'</span>';
   } else {
-    d.textContent=orig;
+    d.textContent = orig;
   }
   hist.appendChild(d);
-  hist.scrollTo({top:hist.scrollHeight,behavior:'smooth'});
+  hist.scrollTo({top:hist.scrollHeight, behavior:'smooth'});
 }
 
 function clearAll() {
-  hist.innerHTML='';
+  hist.innerHTML = '';
   sessionSet.clear();
   clearTimeout(hideTimer);
-  cur.innerHTML=listening
-    ?'<span class="blink"></span>'
-    :'<span class="hint">EIN drücken → sprechen</span>';
+  cur.innerHTML = listening
+    ? '<span class="blink"></span>'
+    : '<span class="hint">EIN drücken → sprechen</span>';
 }
 
-function setPill(cls,txt){
-  pill.className='pill'+(cls?' '+cls:'');
-  pillTxt.textContent=txt;
+function setPill(cls, txt) {
+  pill.className = 'pill'+(cls?' '+cls:'');
+  pillTxt.textContent = txt;
 }
 
-function startBars(){
+function startBars() {
   let t=0;
   (function f(){
     t+=.1;
@@ -563,7 +648,7 @@ function startBars(){
     barAnim=requestAnimationFrame(f);
   })();
 }
-function stopBars(){
+function stopBars() {
   cancelAnimationFrame(barAnim);
   bars.forEach((b,i)=>b.style.height=BAR_H[i]+'px');
 }
@@ -575,12 +660,8 @@ const fsMicBtn = document.getElementById('fs-mic');
 function toggleFullscreen() {
   isFS = !isFS;
   document.body.classList.toggle('fullscreen-mode', isFS);
-
-  // Icons tauschen
   document.getElementById('fs-icon-enter').style.display = isFS ? 'none'  : 'block';
   document.getElementById('fs-icon-exit').style.display  = isFS ? 'block' : 'none';
-
-  // Browser Fullscreen API (versteckt Adressleiste)
   if (isFS) {
     const el = document.documentElement;
     if (el.requestFullscreen)            el.requestFullscreen();
@@ -593,13 +674,6 @@ function toggleFullscreen() {
   }
 }
 
-// Vollbild-MicBtn synchron halten
-function syncFsMic() {
-  if (!fsMicBtn) return;
-  fsMicBtn.classList.toggle('on', listening);
-}
-
-// Fullscreen-Änderung von außen (z.B. Escape-Taste)
 document.addEventListener('fullscreenchange', () => {
   if (!document.fullscreenElement && isFS) {
     isFS = false;
@@ -609,11 +683,12 @@ document.addEventListener('fullscreenchange', () => {
   }
 });
 
-async function wakeLock(){
-  try{if('wakeLock' in navigator) await navigator.wakeLock.request('screen');}catch(e){}
+// ── Wake Lock (Bildschirm nicht sperren) ──
+async function wakeLock() {
+  try { if('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch(e) {}
 }
 wakeLock();
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)wakeLock();});
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) wakeLock(); });
 </script>
 </body>
 </html>
