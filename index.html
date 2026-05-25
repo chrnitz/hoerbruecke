@@ -276,9 +276,8 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 
 <script>
 // ═══════════════════════════════════════════════════
-//  HörBrücke – Hybrid: Web Speech + MediaRecorder
-//  Android: MediaRecorder → Whisper via Claude API
-//  iOS:     Web Speech API (native, beste Qualität)
+//  HörBrücke – Web Speech API
+//  Alle Geräte: Web Speech API (Chrome, Safari, Edge)
 // ═══════════════════════════════════════════════════
 
 const LANGS = {
@@ -287,7 +286,6 @@ const LANGS = {
   es: { code:'es-ES', flag:'🇪🇸', name:'Español' },
 };
 
-const isAndroid = /android/i.test(navigator.userAgent);
 const isIOS     = /iPad|iPhone|iPod/.test(navigator.userAgent)
                   || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
 
@@ -299,12 +297,6 @@ let sessionSet= new Set();
 
 // Web Speech state
 let rec = null;
-
-// MediaRecorder state (Android)
-let mediaRec    = null;
-let audioStream = null;
-let audioChunks = [];
-let recInterval = null;
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -390,132 +382,18 @@ function toggleMic() {
 async function startMic() {
   sessionSet.clear();
   setUI(true);
-
-  if (isAndroid) {
-    await startAndroid();
-  } else {
-    startWebSpeech();
-  }
+  startWebSpeech();
 }
 
 function stopMic() {
   listening = false;
   clearTimeout(hideTimer);
-  clearInterval(recInterval);
-  if (rec)        { rec.onend=null; try{rec.stop();}catch(e){} rec=null; }
-  if (mediaRec)   { try{mediaRec.stop();}catch(e){} mediaRec=null; }
-  if (audioStream){ audioStream.getTracks().forEach(t=>t.stop()); audioStream=null; }
+  if (rec) { rec.onend=null; try{rec.stop();}catch(e){} rec=null; }
   setUI(false);
   cur.innerHTML='<span class="hint">EIN drücken → sprechen</span>';
 }
 
-// ══════════════════════════════════════════════════
-//  ANDROID: MediaRecorder → Claude Whisper
-// ══════════════════════════════════════════════════
-async function startAndroid() {
-  try {
-    audioStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        sampleRate: 16000,
-        channelCount: 1
-      }
-    });
-  } catch(e) {
-    zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Edge → Mikrofon → Erlauben');
-    setUI(false); listening=false; return;
-  }
 
-  listening = true;
-  setPill('on','● Aufnahme läuft');
-  zeigText('Spreche jetzt …', false);
-  startBars();
-  aufnahmeSegment();
-}
-
-function aufnahmeSegment() {
-  if (!listening) return;
-  audioChunks = [];
-
-  const mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg','audio/mp4']
-    .find(m=>MediaRecorder.isTypeSupported(m)) || '';
-
-  try {
-    mediaRec = new MediaRecorder(audioStream, mime?{mimeType:mime}:{});
-  } catch(e) {
-    mediaRec = new MediaRecorder(audioStream);
-  }
-
-  mediaRec.ondataavailable = e => { if(e.data.size>0) audioChunks.push(e.data); };
-
-  mediaRec.onstop = async () => {
-    if (!listening || audioChunks.length===0) return;
-    const blob = new Blob(audioChunks, {type: mediaRec.mimeType||'audio/webm'});
-    if (blob.size < 1000) { // zu kurz – ignorieren
-      if (listening) setTimeout(aufnahmeSegment, 200);
-      return;
-    }
-    await transkribiere(blob);
-    if (listening) setTimeout(aufnahmeSegment, 200);
-  };
-
-  mediaRec.start();
-  // Alle 4 Sekunden ein Segment – gut für Echtzeit-Untertitel
-  setTimeout(()=>{ if(mediaRec&&mediaRec.state==='recording') mediaRec.stop(); }, 4000);
-}
-
-async function transkribiere(blob) {
-  setPill('tr','⟳ Erkenne …');
-
-  // Blob → Base64
-  const b64 = await new Promise((res,rej)=>{
-    const reader = new FileReader();
-    reader.onload  = ()=>res(reader.result.split(',')[1]);
-    reader.onerror = rej;
-    reader.readAsDataURL(blob);
-  });
-
-  const mimeType = blob.type || 'audio/webm';
-  const langName = LANGS[lang]?.name || 'Deutsch';
-
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 300,
-        system: `Du bist ein Echtzeit-Transkriptions-Assistent für Untertitel.
-Transkribiere das Audio EXAKT auf ${langName}.
-Antworte NUR mit dem transkribierten Text – kein Kommentar, keine Anführungszeichen.
-Falls kein Gesprochenes zu hören ist, antworte nur mit: [leer]`,
-        messages:[{
-          role:'user',
-          content:[
-            {type:'document', source:{type:'base64', media_type:mimeType, data:b64}},
-            {type:'text', text:`Transkribiere dieses Audio auf ${langName}.`}
-          ]
-        }]
-      })
-    });
-
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error.message);
-
-    const text = (data.content?.[0]?.text||'').trim();
-    if (!text || text==='[leer]' || text.length<2) {
-      setPill('on','● Aufnahme läuft');
-      return;
-    }
-
-    await verarbeiteText(text);
-
-  } catch(e) {
-    // Fallback auf Web Speech wenn API nicht erreichbar
-    setPill('on','● Aufnahme läuft');
-  }
-}
 
 // ══════════════════════════════════════════════════
 //  iOS / Desktop: Web Speech API
@@ -614,7 +492,7 @@ async function verarbeiteText(text) {
       zeigText(clean);
       addHist(clean, null);
     }
-    setPill('on', isAndroid ? '● Aufnahme läuft' : '● Hört zu …');
+    setPill('on', '● Hört zu …');
   } else {
     zeigText(clean);
     addHist(clean, null);
