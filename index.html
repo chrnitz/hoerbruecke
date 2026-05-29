@@ -416,6 +416,7 @@ function stopMic() {
   clearTimeout(hideTimer);
   clearTimeout(restartTimer);
   clearTimeout(segTimer);
+  androidBuffer = '';
   killeRec();
   stopAndroid();
   setUI(false);
@@ -475,7 +476,6 @@ async function startAndroid() {
 
   setPill('on', '● Aufnahme läuft');
   startBars();
-  zeigStatus('● Aufnahme läuft – bitte sprechen');
   aufnahmeSegment();
 }
 
@@ -538,7 +538,7 @@ function aufnahmeSegment() {
 }
 
 async function sendeAnBackend(blob) {
-  setPill('tr', '⟳ Erkenne …');
+  // kein zeigStatus hier – würde den angezeigten Text überschreiben
 
   const form = new FormData();
   form.append('audio', blob, 'audio.webm');
@@ -674,7 +674,11 @@ async function verarbeiteText(text) {
     addHist(clean, result || null);
     if (listening) setPill('on', isAndroid ? '● Aufnahme läuft' : '● Hört zu …');
   } else {
-    zeigText(clean);
+    if (isAndroid) {
+      anhängenText(clean);  // Android: Text anhängen statt ersetzen
+    } else {
+      zeigText(clean);      // iOS: wie bisher
+    }
     addHist(clean, null);
   }
 }
@@ -685,7 +689,25 @@ function zeigText(text, blink=true) {
   cur.innerHTML = e2(text) + (blink ? '<span class="blink"></span>' : '');
   hideTimer = setTimeout(()=>{
     if (listening) cur.innerHTML = '<span class="blink"></span>';
-  }, 7000);
+  }, 12000);
+}
+
+// Android: Sätze anhängen statt ersetzen
+let androidBuffer = '';
+function anhängenText(text) {
+  clearTimeout(hideTimer);
+  androidBuffer = androidBuffer ? androidBuffer + ' ' + text : text;
+  if (androidBuffer.length > 120) {
+    const words = androidBuffer.split(' ');
+    while (androidBuffer.length > 120 && words.length > 1) {
+      words.shift();
+      androidBuffer = words.join(' ');
+    }
+  }
+  cur.innerHTML = e2(androidBuffer) + '<span class="blink"></span>';
+  hideTimer = setTimeout(()=>{
+    if (listening) { androidBuffer = ''; cur.innerHTML = '<span class="blink"></span>'; }
+  }, 12000);
 }
 function zeigFehler(msg) {
   cur.innerHTML = '<span style="color:var(--red);font-size:.72em;line-height:1.4">'+e2(msg)+'</span>';
