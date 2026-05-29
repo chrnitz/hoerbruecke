@@ -278,12 +278,10 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 // ═══════════════════════════════════════════════════
 //  HörBrücke
 //  iOS/Desktop : Web Speech API, continuous=true
-//  Android     : MediaRecorder → Backend → ElevenLabs Scribe
+//  Android     : Web Speech API, continuous=false
+//                + Neustart nach jedem Satz
 //  Übersetzung : MyMemory + Google Translate (kostenlos)
 // ═══════════════════════════════════════════════════
-
-// ── Backend-URL (kein API-Key hier – nur die Adresse) ──
-const BACKEND = 'https://hoerbruecke-backend.onrender.com';
 
 const LANGS = {
   de: { code:'de-DE', flag:'🇩🇪', name:'Deutsch' },
@@ -305,12 +303,6 @@ let restartTimer = null;
 
 let rec = null;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-// Android MediaRecorder-Zustand
-let mediaRec    = null;
-let audioStream = null;
-let audioChunks = [];
-let segTimer    = null;
 
 const pill    = document.getElementById('pill');
 const pillTxt = document.getElementById('pill-txt');
@@ -394,36 +386,28 @@ async function translate(text) {
 }
 
 // ══════════════════════════════════════════════════
-//  MIKROFON – Ein/Aus
+//  MIKROFON
 // ══════════════════════════════════════════════════
 function toggleMic() {
   if (listening) { stopMic(); } else { startMic(); }
 }
 
 function startMic() {
-  sessionSet.clear();
-  listening = true;
-  setUI(true);
-  if (isAndroid) {
-    startAndroid();
-  } else {
-    if (!SR) {
-      zeigFehler('⚠ Spracherkennung nicht verfügbar – bitte Chrome oder Safari verwenden');
-      listening = false; setUI(false); return;
-    }
-    spawnRec();
+  if (!SR) {
+    zeigFehler('⚠ Spracherkennung nicht verfügbar – bitte Chrome verwenden');
+    return;
   }
+  sessionSet.clear();
+  listening = true;   // SOFORT – vor spawnRec(), verhindert Race Condition
+  setUI(true);
+  spawnRec();
 }
 
 function stopMic() {
-  listening = false;
+  listening = false;  // SOFORT – blockiert jeden Neustart in onend
   clearTimeout(hideTimer);
   clearTimeout(restartTimer);
-  clearTimeout(segTimer);
-  // iOS/Desktop
   killeRec();
-  // Android
-  stopAndroid();
   setUI(false);
   cur.innerHTML = '<span class="hint">EIN drücken → sprechen</span>';
 }
@@ -435,101 +419,12 @@ function killeRec() {
   try { r.abort(); } catch(e) {}
 }
 
-function stopAndroid() {
-  clearTimeout(segTimer);
-  if (mediaRec && mediaRec.state !== 'inactive') {
-    try { mediaRec.stop(); } catch(e) {}
-  }
-  mediaRec = null;
-  if (audioStream) {
-    audioStream.getTracks().forEach(t => t.stop());
-    audioStream = null;
-  }
-  audioChunks = [];
-}
-
 // ══════════════════════════════════════════════════
-//  ANDROID – MediaRecorder → Backend → ElevenLabs
-// ══════════════════════════════════════════════════
-async function startAndroid() {
-  try {
-    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch(e) {
-    zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Chrome → Berechtigungen → Mikrofon');
-    listening = false; setUI(false); return;
-  }
-  setPill('on', '● Aufnahme läuft');
-  startBars();
-  aufnahmeSegment();
-}
-
-function aufnahmeSegment() {
-  if (!listening) return;
-  audioChunks = [];
-
-  const mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4']
-    .find(m => MediaRecorder.isTypeSupported(m)) || '';
-
-  try {
-    mediaRec = new MediaRecorder(audioStream, mime ? { mimeType: mime } : {});
-  } catch(e) {
-    mediaRec = new MediaRecorder(audioStream);
-  }
-
-  mediaRec.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
-
-  mediaRec.onstop = async () => {
-    if (!listening || audioChunks.length === 0) return;
-    const blob = new Blob(audioChunks, { type: mediaRec.mimeType || 'audio/webm' });
-    if (blob.size > 1500) {   // zu kurze Stille ignorieren
-      await sendeAnBackend(blob);
-    }
-    if (listening) aufnahmeSegment();  // nächstes Segment starten
-  };
-
-  mediaRec.start();
-  // Alle 4 Sekunden ein Segment → gute Balance Latenz/Qualität
-  segTimer = setTimeout(() => {
-    if (mediaRec && mediaRec.state === 'recording') mediaRec.stop();
-  }, 4000);
-}
-
-async function sendeAnBackend(blob) {
-  setPill('tr', '⟳ Erkenne …');
-  try {
-    const form = new FormData();
-    form.append('audio', blob, 'audio.webm');
-
-    const resp = await fetch(
-      BACKEND + '/transcribe?lang=' + encodeURIComponent(LANGS[lang].code),
-      { method: 'POST', body: form }
-    );
-
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      // Backend schläft (Render Free Tier) → kurze Meldung, dann weiter
-      if (resp.status === 502 || resp.status === 503) {
-        setPill('on', '● Aufnahme läuft');
-        return;
-      }
-      throw new Error(err.error || resp.statusText);
-    }
-
-    const data = await resp.json();
-    const text = (data.text || '').trim();
-    if (text && text.length > 1) {
-      await verarbeiteText(text);
-    }
-  } catch(e) {
-    // Netzwerkfehler oder Backend schläft gerade auf → still weiter
-    console.warn('Backend-Fehler:', e.message);
-  } finally {
-    if (listening) setPill('on', '● Aufnahme läuft');
-  }
-}
-
-// ══════════════════════════════════════════════════
-//  iOS / Desktop – Web Speech API (continuous)
+//  Web Speech API
+//  iOS/Desktop : continuous=true,  interimResults=true
+//  Android     : continuous=false, interimResults=false
+//                → Chrome Android liefert mit interimResults=true
+//                  oft kein isFinal=true → Text bleibt hängen
 // ══════════════════════════════════════════════════
 function spawnRec() {
   if (!listening) return;
@@ -538,62 +433,83 @@ function spawnRec() {
   const r = new SR();
   rec = r;
   r.lang            = LANGS[lang].code;
-  r.interimResults  = true;
   r.maxAlternatives = 1;
-  r.continuous      = true;
-
-  let lastFinalIdx = -1;
+  r.continuous      = !isAndroid;
+  r.interimResults  = !isAndroid;  // Android: false → nur finale Ergebnisse
 
   r.onstart = () => {
     if (!listening) { killeRec(); return; }
     setPill('on', '● Hört zu …');
     startBars();
+    // Debug: zeigt dass SR gestartet ist
+    if (isAndroid) zeigDebug('Mikrofon aktiv – bitte sprechen');
   };
+
+  let lastFinalIdx = -1;
 
   r.onresult = async (e) => {
     if (!listening) return;
-    let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const seg = e.results[i];
       const t   = seg[0].transcript.trim();
       if (!t) continue;
       if (seg.isFinal) {
-        if (i > lastFinalIdx) { lastFinalIdx = i; await verarbeiteText(t); }
+        if (i > lastFinalIdx) {
+          lastFinalIdx = i;
+          await verarbeiteText(t);
+        }
       } else {
-        interim = t;
+        // Nur auf iOS/Desktop (interimResults=true)
+        clearTimeout(hideTimer);
+        cur.innerHTML = '<span class="interim">'+e2(t)+'</span><span class="blink"></span>';
       }
-    }
-    if (interim) {
-      clearTimeout(hideTimer);
-      cur.innerHTML = '<span class="interim">'+e2(interim)+'</span><span class="blink"></span>';
     }
   };
 
   r.onerror = (ev) => {
     if (!listening) return;
-    if (ev.error === 'no-speech') return;
+    // ALLE Fehler sichtbar anzeigen (hilft beim Debuggen)
+    if (ev.error === 'no-speech') {
+      if (isAndroid) zeigDebug('Kein Ton erkannt – weiter hören …');
+      return;
+    }
     if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
-      zeigFehler('⚠ Mikrofon verweigert – im Browser-Einstellungen Mikrofon erlauben');
+      zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Chrome → Berechtigungen → Mikrofon erlauben');
       listening = false; setUI(false); return;
     }
     if (ev.error === 'network') {
-      zeigFehler('⚠ Netzwerkfehler – WLAN/Mobilnetz prüfen');
+      zeigFehler('⚠ Netzwerkfehler – Web Speech braucht Internet (WLAN/Mobilnetz prüfen)');
       listening = false; setUI(false); return;
     }
+    if (ev.error === 'audio-capture') {
+      zeigFehler('⚠ Mikrofon nicht gefunden oder besetzt');
+      listening = false; setUI(false); return;
+    }
+    if (ev.error === 'aborted') {
+      // Normal beim Neustart – ignorieren
+      return;
+    }
+    // Unbekannter Fehler – anzeigen statt still scheitern
+    zeigFehler('⚠ SR-Fehler: ' + ev.error);
   };
 
   r.onend = () => {
     if (!listening) return;
     clearTimeout(restartTimer);
-    restartTimer = setTimeout(spawnRec, 100);
+    restartTimer = setTimeout(spawnRec, isAndroid ? 300 : 100);
   };
 
   try {
     r.start();
   } catch(e) {
     clearTimeout(restartTimer);
-    restartTimer = setTimeout(spawnRec, 400);
+    restartTimer = setTimeout(spawnRec, 500);
   }
+}
+
+function zeigDebug(msg) {
+  // Nur kurz anzeigen, wird durch echten Text ersetzt
+  cur.innerHTML = '<span style="color:rgba(0,255,80,.4);font-size:.65em">'+e2(msg)+'</span>';
 }
 
 // ══════════════════════════════════════════════════
@@ -607,12 +523,13 @@ async function verarbeiteText(text) {
   const key = clean.toLowerCase().replace(/\s+/g,' ');
   if (sessionSet.has(key)) return;
 
-  // Teilstring-Duplikat nur bei längeren Texten (> 8 Zeichen)
-  if (key.length > 8) {
-    for (const prev of sessionSet) {
-      if (key.includes(prev) && prev.length > 6) { sessionSet.delete(prev); break; }
-      if (prev.includes(key) && key.length > 6) return;
+  // Teilstring-Duplikat: neuer Text enthält alten oder umgekehrt
+  for (const prev of sessionSet) {
+    if (key.includes(prev) && prev.length > 4) {
+      sessionSet.delete(prev); // ersetze alten durch neuen
+      break;
     }
+    if (prev.includes(key) && key.length > 4) return; // neuer ist Teilstring
   }
 
   sessionSet.add(key);
