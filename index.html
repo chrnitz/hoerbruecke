@@ -277,9 +277,10 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 <script>
 // ═══════════════════════════════════════════════════
 //  HörBrücke
-//  Android/Edge : MediaRecorder → Render → ElevenLabs
-//  iOS/Desktop  : Web Speech API (continuous=true)
-//  Übersetzung  : MyMemory + Google Translate
+//  Android/Edge : MediaRecorder → Render → ElevenLabs Scribe
+//                 Echtzeit: 2-Sek.-Segmente, sofortige Anzeige
+//  iOS/Desktop  : Web Speech API (continuous=true, unverändert)
+//  Übersetzung  : MyMemory + Google Translate (kostenlos)
 // ═══════════════════════════════════════════════════
 
 const BACKEND = 'https://hoerbruecke-backend.onrender.com';
@@ -306,10 +307,12 @@ let rec = null;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 // MediaRecorder (Android)
-let mediaRec    = null;
-let audioStream = null;
-let audioChunks = [];
-let segTimer    = null;
+let mediaRec     = null;
+let audioStream  = null;
+let audioChunks  = [];
+let segTimer     = null;
+let androidBuf   = '';      // Angehängter Text-Buffer für Echtzeit-Anzeige
+let serverReady  = false;   // Backend bereits aufgeweckt?
 
 const pill    = document.getElementById('pill');
 const pillTxt = document.getElementById('pill-txt');
@@ -371,7 +374,8 @@ function forceTranslate() {
 async function translate(text) {
   const from=lang, enc=encodeURIComponent(text);
   try {
-    const r=await fetch('https://api.mymemory.translated.net/get?q='+enc+'&langpair='+from+'|de',{mode:'cors'});
+    const r=await fetch('https://api.mymemory.translated.net/get?q='+enc
+      +'&langpair='+from+'|de',{mode:'cors'});
     const d=await r.json();
     if(d.responseStatus===200){
       const t=(d.responseData?.translatedText||'').trim();
@@ -379,7 +383,8 @@ async function translate(text) {
     }
   } catch(e){}
   try {
-    const r=await fetch('https://translate.googleapis.com/translate_a/single?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
+    const r=await fetch('https://translate.googleapis.com/translate_a/single'
+      +'?client=gtx&sl='+from+'&tl=de&dt=t&q='+enc);
     const d=await r.json();
     if(Array.isArray(d)&&d[0]){
       const t=d[0].map(c=>c[0]||'').join('').trim();
@@ -398,7 +403,8 @@ function toggleMic() {
 
 function startMic() {
   sessionSet.clear();
-  listening = true;
+  androidBuf = '';
+  listening  = true;
   setUI(true);
   if (isAndroid) {
     startAndroid();
@@ -412,11 +418,11 @@ function startMic() {
 }
 
 function stopMic() {
-  listening = false;
+  listening  = false;
+  androidBuf = '';
   clearTimeout(hideTimer);
   clearTimeout(restartTimer);
   clearTimeout(segTimer);
-  androidBuffer = '';
   killeRec();
   stopAndroid();
   setUI(false);
@@ -445,37 +451,52 @@ function stopAndroid() {
 
 // ══════════════════════════════════════════════════
 //  ANDROID – MediaRecorder → Render → ElevenLabs
+//
+//  Echtzeit-Strategie:
+//  • Segmentlänge: 2 Sekunden (statt 4) → schnellere Anzeige
+//  • Überlappung: nächstes Segment startet sofort nach stop()
+//  • Backend-Ping: einmalig beim ersten Start (Cold Start)
+//  • Text wird angehängt (nicht ersetzt) → fließender Stream
+//  • Keine zeigStatus()-Aufrufe während Erkennung läuft
 // ══════════════════════════════════════════════════
 async function startAndroid() {
 
-  // 1. Mikrofon anfordern
-  zeigStatus('⟳ Mikrofon wird angefragt …');
+  // 1. Mikrofon
+  zeigStatus('⟳ Mikrofon …');
   try {
-    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 16000
+      }
+    });
   } catch(e) {
     zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Edge → Berechtigungen → Mikrofon');
     listening=false; setUI(false); return;
   }
 
-  // 2. Backend aufwecken (Render Cold Start kann 30 Sek. dauern)
-  zeigStatus('⟳ Verbinde mit Server … (kann 30 Sek. dauern)');
-  let serverOk = false;
-  try {
-    const resp = await Promise.race([
-      fetch(BACKEND + '/', { method:'GET' }),
-      new Promise((_,r) => setTimeout(() => r(new Error('timeout')), 30000))
-    ]);
-    serverOk = resp.ok;
-  } catch(e) {
-    // Server antwortet nicht – trotzdem versuchen
-    zeigStatus('⚠ Server antwortet langsam – starte trotzdem …');
-    await new Promise(r => setTimeout(r, 2000));
+  // 2. Backend einmalig aufwecken (Render Cold Start)
+  if (!serverReady) {
+    zeigStatus('⟳ Server wird gestartet … (bis 30 Sek.)');
+    try {
+      const resp = await Promise.race([
+        fetch(BACKEND + '/', {method:'GET'}),
+        new Promise((_,r) => setTimeout(()=>r(new Error('timeout')), 30000))
+      ]);
+      serverReady = resp.ok;
+    } catch(e) {
+      // Trotzdem versuchen – Server könnte beim ersten Chunk antworten
+      zeigStatus('⚠ Server antwortet langsam – starte trotzdem …');
+      await new Promise(r => setTimeout(r, 1000));
+    }
   }
 
-  if (!listening) return; // Nutzer hat inzwischen gestoppt
+  if (!listening) return;
 
   setPill('on', '● Aufnahme läuft');
   startBars();
+  cur.innerHTML = '<span class="blink"></span>';
   aufnahmeSegment();
 }
 
@@ -483,21 +504,17 @@ function aufnahmeSegment() {
   if (!listening || !audioStream) return;
   audioChunks = [];
 
-  // Bestes Format für Edge/Chrome Android ermitteln
-  const mimeTypes = [
+  // Bestes Format ermitteln
+  const mime = [
     'audio/webm;codecs=opus',
     'audio/webm',
     'audio/ogg;codecs=opus',
-    'audio/mp4',
-    'audio/aac'
-  ];
-  const mime = mimeTypes.find(m => {
-    try { return MediaRecorder.isTypeSupported(m); } catch(e) { return false; }
-  }) || '';
+    'audio/mp4'
+  ].find(m => { try { return MediaRecorder.isTypeSupported(m); } catch(e) { return false; } }) || '';
 
   try {
     mediaRec = mime
-      ? new MediaRecorder(audioStream, { mimeType: mime })
+      ? new MediaRecorder(audioStream, {mimeType: mime})
       : new MediaRecorder(audioStream);
   } catch(e) {
     zeigFehler('⚠ Aufnahme nicht möglich: ' + e.message);
@@ -511,35 +528,39 @@ function aufnahmeSegment() {
   mediaRec.onstop = async () => {
     if (!listening) return;
     if (audioChunks.length === 0) { aufnahmeSegment(); return; }
-    const blob = new Blob(audioChunks, { type: mediaRec.mimeType || 'audio/webm' });
-    if (blob.size > 1000) {
-      await sendeAnBackend(blob);
-    }
-    if (listening) aufnahmeSegment();
+    const blob = new Blob(audioChunks, {type: mediaRec.mimeType || 'audio/webm'});
+
+    // Zu kleiner Blob = Stille → ignorieren, sofort neu starten
+    if (blob.size < 800) { aufnahmeSegment(); return; }
+
+    // Nächstes Segment SOFORT starten (Überlappung) während wir senden
+    // → keine Lücke in der Aufnahme
+    aufnahmeSegment();
+
+    // Parallel senden (blockiert nicht den nächsten Aufnahme-Zyklus)
+    sendeAnBackend(blob);
   };
 
   mediaRec.onerror = () => {
-    if (listening) setTimeout(aufnahmeSegment, 500);
+    if (listening) setTimeout(aufnahmeSegment, 300);
   };
 
   try {
     mediaRec.start();
   } catch(e) {
-    zeigFehler('⚠ Aufnahme-Start fehlgeschlagen: ' + e.message);
+    zeigFehler('⚠ Aufnahme-Fehler: ' + e.message);
     listening=false; setUI(false); return;
   }
 
-  // Segment alle 4 Sekunden senden
+  // ★ 2 Sekunden Segmentlänge → schnelle Echtzeit-Anzeige
   segTimer = setTimeout(() => {
     if (mediaRec && mediaRec.state === 'recording') {
       try { mediaRec.stop(); } catch(e) {}
     }
-  }, 4000);
+  }, 2000);
 }
 
 async function sendeAnBackend(blob) {
-  // kein zeigStatus hier – würde den angezeigten Text überschreiben
-
   const form = new FormData();
   form.append('audio', blob, 'audio.webm');
   const langCode = LANGS[lang].code;
@@ -550,13 +571,13 @@ async function sendeAnBackend(blob) {
         method: 'POST',
         body: form
       }),
-      new Promise((_,r) => setTimeout(() => r(new Error('Timeout nach 20s')), 20000))
+      new Promise((_,r) => setTimeout(()=>r(new Error('Timeout')), 10000))
     ]);
 
     if (!resp.ok) {
       const err = await resp.json().catch(()=>({}));
-      // CORS-Fehler oder Server-Fehler sichtbar machen
-      zeigStatus('⚠ Server-Fehler ' + resp.status + ': ' + (err.error || resp.statusText));
+      // Nur anzeigen wenn kein Text gerade sichtbar ist
+      if (!androidBuf) zeigStatus('⚠ Server ' + resp.status + ': ' + (err.error||''));
       return;
     }
 
@@ -568,21 +589,13 @@ async function sendeAnBackend(blob) {
     }
 
   } catch(e) {
-    const msg = e.message || '';
-    if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-      zeigStatus('⚠ Netzwerkfehler – WLAN prüfen oder CORS-Problem');
-    } else if (msg.includes('Timeout')) {
-      zeigStatus('⚠ Server antwortet nicht – bitte warten');
-    } else {
-      zeigStatus('⚠ Fehler: ' + msg.substring(0, 50));
-    }
-  } finally {
-    if (listening) setPill('on', '● Aufnahme läuft');
+    // Netzwerkfehler still loggen – nicht den Text überschreiben
+    console.warn('Backend:', e.message);
   }
 }
 
 // ══════════════════════════════════════════════════
-//  iOS / Desktop – Web Speech API
+//  iOS / Desktop – Web Speech API (unverändert)
 // ══════════════════════════════════════════════════
 function spawnRec() {
   if (!listening) return;
@@ -618,7 +631,8 @@ function spawnRec() {
     }
     if (interim) {
       clearTimeout(hideTimer);
-      cur.innerHTML = '<span class="interim">'+e2(interim)+'</span><span class="blink"></span>';
+      cur.innerHTML = '<span class="interim">'+e2(interim)+'</span>'
+        + '<span class="blink"></span>';
     }
   };
 
@@ -626,7 +640,7 @@ function spawnRec() {
     if (!listening) return;
     if (ev.error === 'no-speech') return;
     if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
-      zeigFehler('⚠ Mikrofon verweigert – im Browser Mikrofon erlauben');
+      zeigFehler('⚠ Mikrofon verweigert – im Browser-Einstellungen Mikrofon erlauben');
       listening=false; setUI(false); return;
     }
     if (ev.error === 'network') {
@@ -654,63 +668,73 @@ async function verarbeiteText(text) {
   const clean = text.trim();
   if (!clean || clean.length < 2) return;
 
+  // Duplikat-Schutz: nur exakt gleichen aufeinanderfolgenden Text blocken
+  // (weniger aggressiv als vorher – legitime Wiederholungen erlaubt)
   const key = clean.toLowerCase().replace(/\s+/g,' ');
-  if (sessionSet.has(key)) return;
-
-  if (key.length > 8) {
-    for (const prev of sessionSet) {
-      if (key.includes(prev) && prev.length > 6) { sessionSet.delete(prev); break; }
-      if (prev.includes(key) && key.length > 6) return;
-    }
-  }
+  const lastKeys = [...sessionSet].slice(-3);
+  if (lastKeys.includes(key)) return;
   sessionSet.add(key);
+  // Set nicht zu groß werden lassen
+  if (sessionSet.size > 50) {
+    const first = sessionSet.values().next().value;
+    sessionSet.delete(first);
+  }
 
   if (xlate && lang !== 'de') {
     cur.innerHTML = e2(clean)
-      + '<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
+      + '<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">'
+      + '⟳ ÜBERSETZE …</span>';
     setPill('tr', 'Übersetze …');
     const result = await translate(clean);
-    zeigText(result || clean);
+    const anzeige = result || clean;
+    if (isAndroid) {
+      anhängen(anzeige);
+    } else {
+      zeigText(anzeige);
+    }
     addHist(clean, result || null);
     if (listening) setPill('on', isAndroid ? '● Aufnahme läuft' : '● Hört zu …');
   } else {
     if (isAndroid) {
-      anhängenText(clean);  // Android: Text anhängen statt ersetzen
+      anhängen(clean);
     } else {
-      zeigText(clean);      // iOS: wie bisher
+      zeigText(clean);
     }
     addHist(clean, null);
   }
 }
 
-// ── Hilfsfunktionen ──
+// ── Android: Text anhängen → fließender Untertitel-Stream ──
+function anhängen(text) {
+  clearTimeout(hideTimer);
+  androidBuf = androidBuf ? androidBuf + ' ' + text : text;
+  // Maximal 140 Zeichen – ältere Wörter vorne entfernen
+  if (androidBuf.length > 140) {
+    const words = androidBuf.split(' ');
+    while (androidBuf.length > 140 && words.length > 1) {
+      words.shift();
+      androidBuf = words.join(' ');
+    }
+  }
+  cur.innerHTML = e2(androidBuf) + '<span class="blink"></span>';
+  // Nach 15 Sek. Stille: Buffer leeren
+  hideTimer = setTimeout(() => {
+    if (listening) { androidBuf = ''; cur.innerHTML = '<span class="blink"></span>'; }
+  }, 15000);
+}
+
+// ── iOS/Desktop: Text 15 Sek. anzeigen ──
 function zeigText(text, blink=true) {
   clearTimeout(hideTimer);
   cur.innerHTML = e2(text) + (blink ? '<span class="blink"></span>' : '');
-  hideTimer = setTimeout(()=>{
+  hideTimer = setTimeout(() => {
     if (listening) cur.innerHTML = '<span class="blink"></span>';
-  }, 12000);
+  }, 15000);
 }
 
-// Android: Sätze anhängen statt ersetzen
-let androidBuffer = '';
-function anhängenText(text) {
-  clearTimeout(hideTimer);
-  androidBuffer = androidBuffer ? androidBuffer + ' ' + text : text;
-  if (androidBuffer.length > 120) {
-    const words = androidBuffer.split(' ');
-    while (androidBuffer.length > 120 && words.length > 1) {
-      words.shift();
-      androidBuffer = words.join(' ');
-    }
-  }
-  cur.innerHTML = e2(androidBuffer) + '<span class="blink"></span>';
-  hideTimer = setTimeout(()=>{
-    if (listening) { androidBuffer = ''; cur.innerHTML = '<span class="blink"></span>'; }
-  }, 12000);
-}
 function zeigFehler(msg) {
-  cur.innerHTML = '<span style="color:var(--red);font-size:.72em;line-height:1.4">'+e2(msg)+'</span>';
+  cur.innerHTML = '<span style="color:var(--red);font-size:.72em;line-height:1.4">'
+    + e2(msg) + '</span>';
 }
 function zeigStatus(msg) {
   cur.innerHTML = '<span style="color:var(--yellow);font-size:.72em">'+e2(msg)+'</span>';
@@ -730,7 +754,8 @@ function addHist(orig, transl) {
   const d = document.createElement('div');
   d.className = 'hline';
   if (transl) {
-    d.innerHTML = e2(transl)+'<span class="orig">'+(LANGS[lang]?.flag||'')+' '+e2(orig)+'</span>';
+    d.innerHTML = e2(transl)
+      + '<span class="orig">'+(LANGS[lang]?.flag||'')+' '+e2(orig)+'</span>';
   } else {
     d.textContent = orig;
   }
@@ -738,8 +763,9 @@ function addHist(orig, transl) {
   hist.scrollTo({top:hist.scrollHeight, behavior:'smooth'});
 }
 function clearAll() {
-  hist.innerHTML='';
+  hist.innerHTML = '';
   sessionSet.clear();
+  androidBuf = '';
   clearTimeout(hideTimer);
   cur.innerHTML = listening
     ? '<span class="blink"></span>'
@@ -797,7 +823,6 @@ async function wakeLock() {
 }
 wakeLock();
 document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) wakeLock(); });
-</script>
 </script>
 </body>
 </html>
