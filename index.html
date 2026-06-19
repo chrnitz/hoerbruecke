@@ -151,7 +151,7 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 #fsbtn svg{width:16px;height:16px}
 #fsbtn:active{background:rgba(0,255,80,.1);border-color:var(--green)}
 
-/* ── VOLLBILD-MODUS: nur Untertitel sichtbar wie Even G1 ── */
+/* ── VOLLBILD-MODUS: nur Untertitel ── */
 .fullscreen-mode .hdr,
 .fullscreen-mode .langbar,
 .fullscreen-mode #net-warn,
@@ -166,7 +166,7 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
   justify-content: flex-end;
 }
 .fullscreen-mode .cur-wrap {
-  padding: 0 20px 40px;
+  padding: 0 20px 100px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -178,41 +178,53 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
   line-height: 1.25;
 }
 
-/* Exit-Button im Vollbild unten rechts */
+/* Exit-Bereich im Vollbild – unten rechts */
 .fullscreen-mode .fs-exit-hint {
   display: flex !important;
 }
 .fs-exit-hint {
   display: none;
   position: fixed;
-  bottom: 16px;
+  bottom: env(safe-area-inset-bottom, 16px);
   right: 16px;
   z-index: 999;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
+  gap: 10px;
+  padding-bottom: 16px;
 }
+
+/* Mikrofon-Button im Vollbild */
 .fs-mic-btn {
-  width: 56px; height: 56px; border-radius: 50%;
-  border: 2px solid var(--border); background: #000000;
+  width: 60px; height: 60px; border-radius: 50%;
+  border: 2px solid var(--border); background: rgba(0,0,0,0.85);
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; touch-action: manipulation; color: var(--green);
   transition: all .25s;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 .fs-mic-btn.on {
   border-color: var(--green);
-  box-shadow: 0 0 16px rgba(0,255,80,.3);
-  animation: pu 2s ease-out infinite;
+  box-shadow: 0 0 20px rgba(0,255,80,.4);
 }
-.fs-mic-btn svg { width: 22px; height: 22px; }
+.fs-mic-btn svg { width: 24px; height: 24px; }
+
+/* Exit-Button im Vollbild */
 .fs-exit-btn {
-  width: 40px; height: 40px; border-radius: 8px;
-  border: 1px solid var(--border); background: #000000;
+  width: 44px; height: 44px; border-radius: 10px;
+  border: 1px solid rgba(0,255,80,.3); background: rgba(0,0,0,0.85);
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; touch-action: manipulation; color: var(--dim);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
-.fs-exit-btn svg { width: 16px; height: 16px; }
-</style>
+.fs-exit-btn svg { width: 18px; height: 18px; }
+
+/* Als PWA: Vollbild-Button IMMER sichtbar (ist der einzige Weg rein) */
+@media (display-mode: standalone) {
+  #fsbtn { display: flex !important; }
+}</style>
 </head>
 <body>
 
@@ -631,46 +643,24 @@ function stopBars(){
   bars.forEach((b,i)=>b.style.height=BAR_H[i]+'px');
 }
 
-// ── Vollbild ──
+// ── Vollbild (CSS-only – funktioniert auf Safari iOS) ──────────
 let isFS = false;
-const fsMicBtn = document.getElementById('fs-mic');
 
 function toggleFullscreen() {
   isFS = !isFS;
   document.body.classList.toggle('fullscreen-mode', isFS);
-
-  // Icons tauschen
   document.getElementById('fs-icon-enter').style.display = isFS ? 'none'  : 'block';
   document.getElementById('fs-icon-exit').style.display  = isFS ? 'block' : 'none';
-
-  // Browser Fullscreen API (versteckt Adressleiste)
-  if (isFS) {
-    const el = document.documentElement;
-    if (el.requestFullscreen)            el.requestFullscreen();
-    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-    else if (el.mozRequestFullScreen)    el.mozRequestFullScreen();
-  } else {
-    if (document.exitFullscreen)            document.exitFullscreen();
-    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-    else if (document.mozCancelFullScreen)  document.mozCancelFullScreen();
-  }
+  // Vollbild-Mic-Button synchron halten
+  const fsMic = document.getElementById('fs-mic');
+  if (fsMic) fsMic.classList.toggle('on', listening);
 }
 
-// Vollbild-MicBtn synchron halten
+// Vollbild-MicBtn synchron halten wenn sich listening ändert
 function syncFsMic() {
-  if (!fsMicBtn) return;
-  fsMicBtn.classList.toggle('on', listening);
+  const fsMic = document.getElementById('fs-mic');
+  if (fsMic) fsMic.classList.toggle('on', listening);
 }
-
-// Fullscreen-Änderung von außen (z.B. Escape-Taste)
-document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement && isFS) {
-    isFS = false;
-    document.body.classList.remove('fullscreen-mode');
-    document.getElementById('fs-icon-enter').style.display = 'block';
-    document.getElementById('fs-icon-exit').style.display  = 'none';
-  }
-});
 
 async function wakeLock(){
   try{if('wakeLock' in navigator) await navigator.wakeLock.request('screen');}catch(e){}
