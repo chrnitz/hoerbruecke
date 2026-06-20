@@ -758,7 +758,9 @@ function stopBars(){
   bars.forEach((b,i)=>b.style.height=BAR_H[i]+'px');
 }
 
-// ── Vollbild (CSS-only – funktioniert auf Safari iOS) ──
+// ── Vollbild ──
+// iOS: CSS-only (Apple blockiert requestFullscreen in Safari)
+// Android: zusätzlich echte Browser-Fullscreen-API (blendet Adressleiste + Tabs aus)
 let isFS = false;
 
 function toggleFullscreen() {
@@ -768,11 +770,38 @@ function toggleFullscreen() {
   document.getElementById('fs-icon-exit').style.display  = isFS ? 'block' : 'none';
   const fsMic = document.getElementById('fs-mic');
   if (fsMic) fsMic.classList.toggle('on', listening);
+
+  // Nur Android: echte Browser-Fullscreen-API zusätzlich aufrufen
+  if (isAndroid) {
+    if (isFS) {
+      const el = document.documentElement;
+      if (el.requestFullscreen) {
+        el.requestFullscreen().catch(() => {});
+      }
+    } else {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  }
 }
 
 function syncFsMic() {
   const fsMic = document.getElementById('fs-mic');
   if (fsMic) fsMic.classList.toggle('on', listening);
+}
+
+// Nur Android: erkennt wenn Nutzer Vollbild über Zurück-Taste verlässt
+// statt über unseren Button – hält CSS-Klasse synchron
+if (isAndroid) {
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && isFS) {
+      isFS = false;
+      document.body.classList.remove('fullscreen-mode');
+      document.getElementById('fs-icon-enter').style.display = 'block';
+      document.getElementById('fs-icon-exit').style.display  = 'none';
+    }
+  });
 }
 
 async function wakeLock(){
