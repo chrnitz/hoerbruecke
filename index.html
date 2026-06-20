@@ -33,18 +33,24 @@
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;background:#000000;color:var(--text);font-family:system-ui,sans-serif}
 body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
-  background:#000000;
-  /* safe-area-inset-top schiebt Inhalt IMMER unter die Statusleiste –
-     gilt sowohl im Browser als auch als PWA vom Homescreen */
-  padding-top: env(safe-area-inset-top);
-  padding-left: env(safe-area-inset-left);
-  padding-right: env(safe-area-inset-right);
-  padding-bottom: env(safe-area-inset-bottom);
+  background:#000000}
+
+/* Im Browser: Safe-Area-Abstände respektieren */
+@media not all and (display-mode: standalone) {
+  body {
+    padding:env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+}
+
+/* Als PWA (Homescreen): kein Padding, echter Vollbild */
+@media (display-mode: standalone) {
+  body { padding: 0; }
 }
 
 /* ── HEADER ── */
 .hdr{display:flex;align-items:center;justify-content:space-between;
-  padding:14px 14px 10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
+  padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;
   background:#000000}
 .logo{font-size:1.15rem;font-weight:800;letter-spacing:-.03em;color:var(--green)}
 .logo b{color:var(--green)}
@@ -302,10 +308,12 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 // ═══════════════════════════════════════════════════
 //  HörBrücke
 //  iOS/Desktop : Web Speech API, continuous=true
-//  Android     : Web Speech API, continuous=false
-//                + Neustart nach jedem Satz
+//  Android     : MediaRecorder → Render → ElevenLabs Scribe
+//                Echtzeit: 2-Sek.-Segmente, überlappende Aufnahme
 //  Übersetzung : MyMemory + Google Translate (kostenlos)
 // ═══════════════════════════════════════════════════
+
+const BACKEND = 'https://hoerbruecke-backend.onrender.com';
 
 const LANGS = {
   de: { code:'de-DE', flag:'🇩🇪', name:'Deutsch' },
@@ -318,15 +326,24 @@ const isIOS     = /iPad|iPhone|iPod/.test(navigator.userAgent)
                   || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
 const isSamsung = /SamsungBrowser/i.test(navigator.userAgent);
 
-let lang       = 'de';
-let xlate      = false;
-let listening  = false;   // EINZIGE Quelle der Wahrheit: true=läuft, false=gestoppt
-let hideTimer  = null;
-let sessionSet = new Set();
+let lang         = 'de';
+let xlate        = false;
+let listening    = false;
+let hideTimer    = null;
+let sessionSet   = new Set();
 let restartTimer = null;
 
+// Web Speech (iOS/Desktop)
 let rec = null;
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+// MediaRecorder (Android)
+let mediaRec    = null;
+let audioStream = null;
+let audioChunks = [];
+let segTimer    = null;
+let androidBuf  = '';
+let serverReady = false;
 
 const pill    = document.getElementById('pill');
 const pillTxt = document.getElementById('pill-txt');
@@ -341,15 +358,6 @@ const bars    = [0,1,2,3,4].map(i=>document.getElementById('b'+i));
 let barAnim   = null;
 const BAR_H   = [6,12,20,12,6];
 
-// Samsung-Browser hat kein Web Speech – Hinweis zeigen
-if (isSamsung || !SR) {
-  document.getElementById('net-warn').innerHTML = '⚠ Spracherkennung nicht verfügbar. '
-    + 'Bitte <strong>Chrome</strong> verwenden: '
-    + '<a href="https://play.google.com/store/apps/details?id=com.android.chrome" '
-    + 'style="color:#ffe000">Chrome herunterladen →</a>';
-  document.getElementById('net-warn').classList.add('show');
-}
-
 // ── Sprachauswahl ──
 function setLang(l) {
   lang = l;
@@ -358,7 +366,9 @@ function setLang(l) {
   if (listening) { stopMic(); setTimeout(startMic,400); }
 }
 
-// ── Übersetzen ──
+// ══════════════════════════════════════════════════
+//  ÜBERSETZUNG
+// ══════════════════════════════════════════════════
 async function toggleTranslate() {
   if (!xlate) {
     tbtn.textContent='⟳ Prüfe …'; tbtn.disabled=true;
@@ -410,28 +420,36 @@ async function translate(text) {
 }
 
 // ══════════════════════════════════════════════════
-//  MIKROFON
+//  MIKROFON – Ein/Aus
 // ══════════════════════════════════════════════════
 function toggleMic() {
   if (listening) { stopMic(); } else { startMic(); }
 }
 
 function startMic() {
-  if (!SR) {
-    zeigFehler('⚠ Spracherkennung nicht verfügbar – bitte Chrome verwenden');
-    return;
-  }
   sessionSet.clear();
-  listening = true;   // SOFORT – vor spawnRec(), verhindert Race Condition
+  androidBuf = '';
+  listening  = true;
   setUI(true);
-  spawnRec();
+  if (isAndroid) {
+    startAndroid();
+  } else {
+    if (!SR) {
+      zeigFehler('⚠ Spracherkennung nicht verfügbar – bitte Safari verwenden');
+      listening=false; setUI(false); return;
+    }
+    spawnRec();
+  }
 }
 
 function stopMic() {
-  listening = false;  // SOFORT – blockiert jeden Neustart in onend
+  listening  = false;
+  androidBuf = '';
   clearTimeout(hideTimer);
   clearTimeout(restartTimer);
+  clearTimeout(segTimer);
   killeRec();
+  stopAndroid();
   setUI(false);
   cur.innerHTML = '<span class="hint">EIN drücken → sprechen</span>';
 }
@@ -443,12 +461,125 @@ function killeRec() {
   try { r.abort(); } catch(e) {}
 }
 
+function stopAndroid() {
+  clearTimeout(segTimer);
+  if (mediaRec && mediaRec.state !== 'inactive') {
+    try { mediaRec.stop(); } catch(e) {}
+  }
+  mediaRec = null;
+  if (audioStream) {
+    audioStream.getTracks().forEach(t => t.stop());
+    audioStream = null;
+  }
+  audioChunks = [];
+}
+
 // ══════════════════════════════════════════════════
-//  Web Speech API
-//  iOS/Desktop : continuous=true  (stabiler langer Stream)
-//  Android     : continuous=false (Chrome Android liefert
-//                mit continuous=true oft keinen Text)
-//                → nach jedem Satz automatisch neu starten
+//  ANDROID – MediaRecorder → Render → ElevenLabs
+// ══════════════════════════════════════════════════
+async function startAndroid() {
+  zeigStatus('⟳ Mikrofon …');
+  try {
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 }
+    });
+  } catch(e) {
+    zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Edge → Berechtigungen → Mikrofon');
+    listening=false; setUI(false); return;
+  }
+
+  if (!serverReady) {
+    zeigStatus('⟳ Server wird gestartet … (bis 30 Sek.)');
+    try {
+      const resp = await Promise.race([
+        fetch(BACKEND + '/', {method:'GET'}),
+        new Promise((_,r) => setTimeout(()=>r(new Error('timeout')), 30000))
+      ]);
+      serverReady = resp.ok;
+    } catch(e) {
+      zeigStatus('⚠ Server antwortet langsam – starte trotzdem …');
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+
+  if (!listening) return;
+
+  setPill('on', '● Aufnahme läuft');
+  startBars();
+  cur.innerHTML = '<span class="blink"></span>';
+  aufnahmeSegment();
+}
+
+function aufnahmeSegment() {
+  if (!listening || !audioStream) return;
+  audioChunks = [];
+
+  const mime = [
+    'audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'
+  ].find(m => { try { return MediaRecorder.isTypeSupported(m); } catch(e) { return false; } }) || '';
+
+  try {
+    mediaRec = mime ? new MediaRecorder(audioStream, {mimeType: mime}) : new MediaRecorder(audioStream);
+  } catch(e) {
+    zeigFehler('⚠ Aufnahme nicht möglich: ' + e.message);
+    listening=false; setUI(false); return;
+  }
+
+  mediaRec.ondataavailable = e => { if (e.data && e.data.size > 0) audioChunks.push(e.data); };
+
+  mediaRec.onstop = async () => {
+    if (!listening) return;
+    if (audioChunks.length === 0) { aufnahmeSegment(); return; }
+    const blob = new Blob(audioChunks, {type: mediaRec.mimeType || 'audio/webm'});
+    if (blob.size < 800) { aufnahmeSegment(); return; }
+    aufnahmeSegment();          // nächstes Segment sofort starten – keine Lücke
+    sendeAnBackend(blob);       // parallel senden
+  };
+
+  mediaRec.onerror = () => { if (listening) setTimeout(aufnahmeSegment, 300); };
+
+  try {
+    mediaRec.start();
+  } catch(e) {
+    zeigFehler('⚠ Aufnahme-Fehler: ' + e.message);
+    listening=false; setUI(false); return;
+  }
+
+  segTimer = setTimeout(() => {
+    if (mediaRec && mediaRec.state === 'recording') { try { mediaRec.stop(); } catch(e) {} }
+  }, 2000);
+}
+
+async function sendeAnBackend(blob) {
+  const form = new FormData();
+  form.append('audio', blob, 'audio.webm');
+  const langCode = LANGS[lang].code;
+
+  try {
+    const resp = await Promise.race([
+      fetch(BACKEND + '/transcribe?lang=' + encodeURIComponent(langCode), {
+        method: 'POST', body: form
+      }),
+      new Promise((_,r) => setTimeout(()=>r(new Error('Timeout')), 10000))
+    ]);
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      if (!androidBuf) zeigStatus('⚠ Server ' + resp.status + ': ' + (err.error||''));
+      return;
+    }
+
+    const data = await resp.json();
+    const text = (data.text || '').trim();
+    if (text && text.length > 1) await verarbeiteText(text);
+
+  } catch(e) {
+    console.warn('Backend:', e.message);
+  }
+}
+
+// ══════════════════════════════════════════════════
+//  iOS / Desktop – Web Speech API (unverändert)
 // ══════════════════════════════════════════════════
 function spawnRec() {
   if (!listening) return;
@@ -459,7 +590,7 @@ function spawnRec() {
   r.lang            = LANGS[lang].code;
   r.interimResults  = true;
   r.maxAlternatives = 1;
-  r.continuous      = !isAndroid;  // false auf Android, true auf iOS/Desktop
+  r.continuous      = true;
 
   let lastFinalIdx = -1;
 
@@ -490,83 +621,85 @@ function spawnRec() {
 
   r.onerror = (ev) => {
     if (!listening) return;
-    if (ev.error === 'no-speech') return;  // normal bei Pausen
+    if (ev.error === 'no-speech') return;
     if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
-      zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Chrome → Berechtigungen → Mikrofon');
-      listening = false; setUI(false); return;
+      zeigFehler('⚠ Mikrofon verweigert – im Browser-Einstellungen Mikrofon erlauben');
+      listening=false; setUI(false); return;
     }
     if (ev.error === 'network') {
       zeigFehler('⚠ Netzwerkfehler – WLAN/Mobilnetz prüfen');
-      listening = false; setUI(false); return;
+      listening=false; setUI(false); return;
     }
   };
 
   r.onend = () => {
-    if (!listening) return;  // Nutzer hat gestoppt → kein Neustart
+    if (!listening) return;
     clearTimeout(restartTimer);
-    restartTimer = setTimeout(spawnRec, isAndroid ? 150 : 100);
+    restartTimer = setTimeout(spawnRec, 100);
   };
 
-  try {
-    r.start();
-  } catch(e) {
+  try { r.start(); } catch(e) {
     clearTimeout(restartTimer);
     restartTimer = setTimeout(spawnRec, 400);
   }
 }
 
 // ══════════════════════════════════════════════════
-//  Text verarbeiten (Duplikatschutz + Übersetzung)
+//  Text verarbeiten
 // ══════════════════════════════════════════════════
 async function verarbeiteText(text) {
   const clean = text.trim();
-  if (!clean || clean.length<2) return;
+  if (!clean || clean.length < 2) return;
 
-  // Duplikat-Schutz
   const key = clean.toLowerCase().replace(/\s+/g,' ');
-  if (sessionSet.has(key)) return;
-
-  // Teilstring-Duplikat: neuer Text enthält alten oder umgekehrt
-  for (const prev of sessionSet) {
-    if (key.includes(prev) && prev.length > 4) {
-      sessionSet.delete(prev); // ersetze alten durch neuen
-      break;
-    }
-    if (prev.includes(key) && key.length > 4) return; // neuer ist Teilstring
-  }
-
+  const lastKeys = [...sessionSet].slice(-3);
+  if (lastKeys.includes(key)) return;
   sessionSet.add(key);
+  if (sessionSet.size > 50) { const first = sessionSet.values().next().value; sessionSet.delete(first); }
 
-  if (xlate && lang!=='de') {
-    cur.innerHTML=e2(clean)
-      +'<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
-    setPill('tr','Übersetze …');
+  if (xlate && lang !== 'de') {
+    cur.innerHTML = e2(clean)
+      + '<span style="display:block;font-size:.5em;color:var(--yellow);margin-top:6px">⟳ ÜBERSETZE …</span>';
+    setPill('tr', 'Übersetze …');
     const result = await translate(clean);
-    if (result) {
-      zeigText(result);
-      addHist(clean, result);
-    } else {
-      zeigText(clean);
-      addHist(clean, null);
-    }
-    setPill('on','● Hört zu …');
+    const anzeige = result || clean;
+    if (isAndroid) { anhängen(anzeige); } else { zeigText(anzeige); }
+    addHist(clean, result || null);
+    if (listening) setPill('on', isAndroid ? '● Aufnahme läuft' : '● Hört zu …');
   } else {
-    zeigText(clean);
+    if (isAndroid) { anhängen(clean); } else { zeigText(clean); }
     addHist(clean, null);
   }
 }
 
-// ── Text 7 Sekunden anzeigen dann blinken ──
+// ── Android: Text anhängen → fließender Untertitel-Stream ──
+function anhängen(text) {
+  clearTimeout(hideTimer);
+  androidBuf = androidBuf ? androidBuf + ' ' + text : text;
+  if (androidBuf.length > 140) {
+    const words = androidBuf.split(' ');
+    while (androidBuf.length > 140 && words.length > 1) { words.shift(); androidBuf = words.join(' '); }
+  }
+  cur.innerHTML = e2(androidBuf) + '<span class="blink"></span>';
+  hideTimer = setTimeout(() => {
+    if (listening) { androidBuf = ''; cur.innerHTML = '<span class="blink"></span>'; }
+  }, 15000);
+}
+
+// ── iOS/Desktop: Text anzeigen ──
 function zeigText(text, blink=true) {
   clearTimeout(hideTimer);
   cur.innerHTML = e2(text) + (blink ? '<span class="blink"></span>' : '');
   hideTimer = setTimeout(()=>{
     if (listening) cur.innerHTML='<span class="blink"></span>';
-  }, 7000);
+  }, 15000);
 }
 
 function zeigFehler(msg) {
-  cur.innerHTML='<span style="color:var(--red);font-size:.75em">'+e2(msg)+'</span>';
+  cur.innerHTML='<span style="color:var(--red);font-size:.72em;line-height:1.4">'+e2(msg)+'</span>';
+}
+function zeigStatus(msg) {
+  cur.innerHTML = '<span style="color:var(--yellow);font-size:.72em">'+e2(msg)+'</span>';
 }
 
 // ── UI ──
@@ -575,7 +708,6 @@ function setUI(on) {
   micLbl.textContent = on ? 'AUS' : 'EIN';
   barsEl.classList.toggle('on', on);
   if (!on) { stopBars(); setPill('','Bereit'); }
-  // Vollbild-Mic-Button synchron halten
   const fmb = document.getElementById('fs-mic');
   if (fmb) fmb.classList.toggle('on', on);
 }
@@ -599,6 +731,7 @@ function addHist(orig, transl) {
 function clearAll() {
   hist.innerHTML='';
   sessionSet.clear();
+  androidBuf = '';
   clearTimeout(hideTimer);
   cur.innerHTML=listening
     ?'<span class="blink"></span>'
@@ -625,46 +758,22 @@ function stopBars(){
   bars.forEach((b,i)=>b.style.height=BAR_H[i]+'px');
 }
 
-// ── Vollbild ──
+// ── Vollbild (CSS-only – funktioniert auf Safari iOS) ──
 let isFS = false;
-const fsMicBtn = document.getElementById('fs-mic');
 
 function toggleFullscreen() {
   isFS = !isFS;
   document.body.classList.toggle('fullscreen-mode', isFS);
-
-  // Icons tauschen
   document.getElementById('fs-icon-enter').style.display = isFS ? 'none'  : 'block';
   document.getElementById('fs-icon-exit').style.display  = isFS ? 'block' : 'none';
-
-  // Browser Fullscreen API (versteckt Adressleiste)
-  if (isFS) {
-    const el = document.documentElement;
-    if (el.requestFullscreen)            el.requestFullscreen();
-    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-    else if (el.mozRequestFullScreen)    el.mozRequestFullScreen();
-  } else {
-    if (document.exitFullscreen)            document.exitFullscreen();
-    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-    else if (document.mozCancelFullScreen)  document.mozCancelFullScreen();
-  }
+  const fsMic = document.getElementById('fs-mic');
+  if (fsMic) fsMic.classList.toggle('on', listening);
 }
 
-// Vollbild-MicBtn synchron halten
 function syncFsMic() {
-  if (!fsMicBtn) return;
-  fsMicBtn.classList.toggle('on', listening);
+  const fsMic = document.getElementById('fs-mic');
+  if (fsMic) fsMic.classList.toggle('on', listening);
 }
-
-// Fullscreen-Änderung von außen (z.B. Escape-Taste)
-document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement && isFS) {
-    isFS = false;
-    document.body.classList.remove('fullscreen-mode');
-    document.getElementById('fs-icon-enter').style.display = 'block';
-    document.getElementById('fs-icon-exit').style.display  = 'none';
-  }
-});
 
 async function wakeLock(){
   try{if('wakeLock' in navigator) await navigator.wakeLock.request('screen');}catch(e){}
