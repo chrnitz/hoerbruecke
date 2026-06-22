@@ -134,7 +134,51 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 .bar{width:4px;border-radius:2px;background:rgba(0,255,80,.15);transition:background .3s}
 .bars.on .bar{background:var(--green);box-shadow:0 0 4px var(--green)}
 
-/* ── FULLSCREEN BUTTON ── */
+/* ── STT-MODUS SCHIEBEREGLER (nur iOS aktiv) ── */
+.stt-toggle-wrap {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+  background: #000000; flex-shrink: 0; flex-wrap: wrap;
+}
+.stt-toggle-label {
+  font-size: .65rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--dim); white-space: nowrap;
+}
+.stt-toggle-label.active { color: var(--green); }
+.stt-switch {
+  position: relative; width: 52px; height: 26px; flex-shrink: 0;
+  cursor: pointer;
+}
+.stt-switch input { opacity: 0; width: 0; height: 0; }
+.stt-slider {
+  position: absolute; inset: 0; border-radius: 26px;
+  background: rgba(0,255,80,.12); border: 1px solid var(--border);
+  transition: all .3s;
+}
+.stt-slider::before {
+  content: ''; position: absolute; width: 20px; height: 20px;
+  left: 3px; top: 3px; border-radius: 50%;
+  background: var(--dim); transition: all .3s;
+}
+.stt-switch input:checked + .stt-slider {
+  background: rgba(0,255,80,.18); border-color: var(--green);
+}
+.stt-switch input:checked + .stt-slider::before {
+  transform: translateX(26px); background: var(--green);
+  box-shadow: 0 0 8px rgba(0,255,80,.6);
+}
+.stt-switch.disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
+.stt-switch.disabled input { pointer-events: none; }
+.stt-toast {
+  display: none; position: fixed; bottom: 80px; left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255,68,68,.9); color: #fff;
+  padding: 8px 18px; border-radius: 20px; font-size: .8rem;
+  z-index: 9999; pointer-events: none; white-space: nowrap;
+}
+.stt-toast.show { display: block; animation: toastIn .3s ease; }
+@keyframes toastIn { from{opacity:0;transform:translateX(-50%) translateY(8px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+
 #fsbtn{
   width:34px;height:34px;border-radius:8px;
   border:1px solid var(--border);background:#000000;
@@ -145,9 +189,10 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 #fsbtn svg{width:16px;height:16px}
 #fsbtn:active{background:rgba(0,255,80,.1);border-color:var(--green)}
 
-/* ── VOLLBILD-MODUS: nur Untertitel sichtbar wie Even G1 ── */
+/* ── VOLLBILD-MODUS: nur Untertitel sichtbar ── */
 .fullscreen-mode .hdr,
 .fullscreen-mode .langbar,
+.fullscreen-mode .stt-toggle-wrap,
 .fullscreen-mode #net-warn,
 .fullscreen-mode .hist,
 .fullscreen-mode .sep,
@@ -179,7 +224,7 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 .fs-exit-hint {
   display: none;
   position: fixed;
-  bottom: 16px;
+  bottom: max(16px, env(safe-area-inset-bottom));
   right: 16px;
   z-index: 999;
   flex-direction: column;
@@ -242,6 +287,18 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
   <button class="tbtn" id="tbtn" onclick="toggleTranslate()">→🇩🇪 Übersetzen</button>
 </div>
 
+<!-- STT-MODUS SCHIEBEREGLER -->
+<div class="stt-toggle-wrap">
+  <span class="stt-toggle-label active" id="lbl-webspeech">Web Speech</span>
+  <label class="stt-switch" id="stt-switch-wrap">
+    <input type="checkbox" id="stt-toggle" onchange="onSttToggle()">
+    <span class="stt-slider"></span>
+  </label>
+  <span class="stt-toggle-label" id="lbl-elevenlabs">ElevenLabs</span>
+  <span style="margin-left:auto;font-size:.6rem;color:rgba(0,255,80,.3)" id="stt-mode-hint">iOS: Pfad wählbar</span>
+</div>
+<div class="stt-toast" id="stt-toast">Nur für iOS verfügbar</div>
+
 <!-- VERLAUF -->
 <div class="hist" id="hist"></div>
 <hr class="sep">
@@ -301,10 +358,10 @@ body{display:flex;flex-direction:column;height:100dvh;overflow:hidden;
 <script>
 // ═══════════════════════════════════════════════════
 //  HörBrücke
-//  iOS/Desktop : Web Speech API, continuous=true
-//  Android     : MediaRecorder → Render → ElevenLabs Scribe
-//                Echtzeit: 2-Sek.-Segmente, überlappende Aufnahme
-//  Übersetzung : MyMemory + Google Translate (kostenlos)
+//  Pfad 1 – iOS Web Speech : Web Speech API, continuous=true
+//  Pfad 2 – iOS ElevenLabs : MediaRecorder → Render → ElevenLabs (per Schieberegler)
+//  Pfad 3 – Android        : MediaRecorder → Render → ElevenLabs (fest)
+//  Übersetzung             : MyMemory + Google Translate (kostenlos)
 // ═══════════════════════════════════════════════════
 
 const BACKEND = 'https://hoerbruecke-backend.onrender.com';
@@ -316,9 +373,23 @@ const LANGS = {
 };
 
 const isAndroid = /android/i.test(navigator.userAgent);
-const isIOS     = /iPad|iPhone|iPod/.test(navigator.userAgent)
-                  || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
-const isSamsung = /SamsungBrowser/i.test(navigator.userAgent);
+
+// STT-Modus: false = Web Speech (iOS Standard), true = ElevenLabs via Backend
+let useElevenLabs = false;
+
+// Schieberegler initialisieren
+(function initSttToggle() {
+  const sw   = document.getElementById('stt-switch-wrap');
+  const hint = document.getElementById('stt-mode-hint');
+  if (isAndroid) {
+    sw.classList.add('disabled');
+    if (hint) hint.textContent = 'Android: immer ElevenLabs';
+    // Schieberegler auf ElevenLabs fixieren (visuell)
+    document.getElementById('stt-toggle').checked = true;
+    document.getElementById('lbl-webspeech').classList.remove('active');
+    document.getElementById('lbl-elevenlabs').classList.add('active');
+  }
+})();
 
 let lang         = 'de';
 let xlate        = false;
@@ -351,6 +422,27 @@ const tbtn    = document.getElementById('tbtn');
 const bars    = [0,1,2,3,4].map(i=>document.getElementById('b'+i));
 let barAnim   = null;
 const BAR_H   = [6,12,20,12,6];
+
+// ── STT-Modus Schieberegler ──
+function onSttToggle() {
+  if (isAndroid) {
+    // Auf Android: Änderung rückgängig machen + Toast zeigen
+    const tog = document.getElementById('stt-toggle');
+    tog.checked = true; // bleibt auf ElevenLabs
+    const toast = document.getElementById('stt-toast');
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2500);
+    return;
+  }
+  useElevenLabs = document.getElementById('stt-toggle').checked;
+  document.getElementById('lbl-webspeech').classList.toggle('active', !useElevenLabs);
+  document.getElementById('lbl-elevenlabs').classList.toggle('active', useElevenLabs);
+  // serverReady zurücksetzen – Server könnte seit letzter Session eingeschlafen sein
+  serverReady = false;
+  // Wenn gerade aktiv: neu starten mit neuem Modus
+  if (listening) { stopMic(); setTimeout(startMic, 400); }
+}
+
 
 // ── Sprachauswahl ──
 function setLang(l) {
@@ -425,9 +517,11 @@ function startMic() {
   androidBuf = '';
   listening  = true;
   setUI(true);
-  if (isAndroid) {
-    startAndroid();
+  if (isAndroid || useElevenLabs) {
+    // Pfad 2 (iOS ElevenLabs) + Pfad 3 (Android ElevenLabs)
+    startElevenLabs();
   } else {
+    // Pfad 1 (iOS Web Speech)
     if (!SR) {
       zeigFehler('⚠ Spracherkennung nicht verfügbar – bitte Safari verwenden');
       listening=false; setUI(false); return;
@@ -443,7 +537,7 @@ function stopMic() {
   clearTimeout(restartTimer);
   clearTimeout(segTimer);
   killeRec();
-  stopAndroid();
+  stopMediaRecorder();
   setUI(false);
   cur.innerHTML = '<span class="hint">EIN drücken → sprechen</span>';
 }
@@ -455,7 +549,7 @@ function killeRec() {
   try { r.abort(); } catch(e) {}
 }
 
-function stopAndroid() {
+function stopMediaRecorder() {
   clearTimeout(segTimer);
   if (mediaRec && mediaRec.state !== 'inactive') {
     try { mediaRec.stop(); } catch(e) {}
@@ -469,16 +563,20 @@ function stopAndroid() {
 }
 
 // ══════════════════════════════════════════════════
-//  ANDROID – MediaRecorder → Render → ElevenLabs
+//  ELEVENLABS-PFAD – MediaRecorder → Render → ElevenLabs
+//  Gilt für: Pfad 2 (iOS ElevenLabs) + Pfad 3 (Android ElevenLabs)
 // ══════════════════════════════════════════════════
-async function startAndroid() {
+async function startElevenLabs() {
   zeigStatus('⟳ Mikrofon …');
   try {
     audioStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 }
     });
   } catch(e) {
-    zeigFehler('⚠ Mikrofon verweigert – Einstellungen → Apps → Edge → Berechtigungen → Mikrofon');
+    const hint = isAndroid
+      ? '⚠ Mikrofon verweigert – Einstellungen → Apps → Edge → Berechtigungen → Mikrofon'
+      : '⚠ Mikrofon verweigert – Safari → Einstellungen → HörBrücke → Mikrofon erlauben';
+    zeigFehler(hint);
     listening=false; setUI(false); return;
   }
 
@@ -657,11 +755,11 @@ async function verarbeiteText(text) {
     setPill('tr', 'Übersetze …');
     const result = await translate(clean);
     const anzeige = result || clean;
-    if (isAndroid) { anhängen(anzeige); } else { zeigText(anzeige); }
+    if (isAndroid || useElevenLabs) { anhängen(anzeige); } else { zeigText(anzeige); }
     addHist(clean, result || null);
-    if (listening) setPill('on', isAndroid ? '● Aufnahme läuft' : '● Hört zu …');
+    if (listening) setPill('on', (isAndroid || useElevenLabs) ? '● Aufnahme läuft' : '● Hört zu …');
   } else {
-    if (isAndroid) { anhängen(clean); } else { zeigText(clean); }
+    if (isAndroid || useElevenLabs) { anhängen(clean); } else { zeigText(clean); }
     addHist(clean, null);
   }
 }
@@ -778,11 +876,6 @@ function toggleFullscreen() {
       }
     }
   }
-}
-
-function syncFsMic() {
-  const fsMic = document.getElementById('fs-mic');
-  if (fsMic) fsMic.classList.toggle('on', listening);
 }
 
 // Nur Android: erkennt wenn Nutzer Vollbild über Zurück-Taste verlässt
